@@ -93,15 +93,16 @@ app.post(
       if (event.event === 'sms_received' && event.requestId && event.message) {
         const { data: order } = await db
           .from('orders')
-          .select('id, user_id, plan, profiles!inner(telegram_id)')
+          .select('id, user_id, plan, purchase_msg_id, profiles!inner(telegram_id)')
           .eq('request_id', event.requestId)
           .single();
 
         if (order) {
-          const orderId  = (order as any).id as string;
-          const userId   = (order as any).user_id as string;
-          const tid      = (order as any).profiles.telegram_id as number;
-          const orderPlan = (order as any).plan as string | undefined;
+          const orderId       = (order as any).id as string;
+          const userId        = (order as any).user_id as string;
+          const tid           = (order as any).profiles.telegram_id as number;
+          const orderPlan     = (order as any).plan as string | undefined;
+          const purchaseMsgId = (order as any).purchase_msg_id as number | null | undefined;
 
           // 1. Store SMS message
           await db.from('sms_messages').insert({
@@ -135,7 +136,13 @@ app.post(
             ? `📨 <b>OTP Received!</b>\n🔑 Code: <code>${otp}</code>\n\n<i>${event.message}</i>${reuseNote}`
             : `📨 <b>SMS Received:</b>\n<i>${event.message}</i>${reuseNote}`;
 
-          await bot.api.sendMessage(tid, msgText, { parse_mode: 'HTML' }).catch(() => undefined);
+          // Reply to the original "Number Purchased!" message so OTP appears
+          // in-thread right below the purchase confirmation.
+          // Falls back to a plain message if purchase_msg_id wasn't saved.
+          await bot.api.sendMessage(tid, msgText, {
+            parse_mode: 'HTML',
+            ...(purchaseMsgId ? { reply_to_message_id: purchaseMsgId } : {}),
+          }).catch(() => undefined);
         }
       }
 

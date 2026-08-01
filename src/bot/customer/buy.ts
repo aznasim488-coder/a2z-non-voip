@@ -150,7 +150,7 @@ export async function handleBuyExecute(
       endTime: result.endTime,
     });
 
-    await ctx.reply(
+    const sentMsg = await ctx.reply(
       `✅ <b>Number Purchased!</b>\n${HR}\n` +
       phoneBlock(result.number) + '\n' +
       `Service: <b>${esc(result.serviceName)}</b>\n` +
@@ -160,6 +160,13 @@ export async function handleBuyExecute(
       `You can also check <b>My Numbers</b> at any time.`,
       { parse_mode: 'HTML' },
     );
+
+    // Save message_id so the OTP notification can reply to this exact message
+    await ctx.db
+      .from('orders')
+      // @ts-ignore
+      .update({ purchase_msg_id: sentMsg.message_id })
+      .eq('id', order.id);
   } catch (e) {
     // Refund on failure
     const errMsg = e instanceof Error ? e.message : 'Unknown error';
