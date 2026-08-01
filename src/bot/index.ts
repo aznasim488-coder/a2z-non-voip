@@ -93,7 +93,7 @@ export function createBot(
   bot.command('credit', async (ctx) => {
     if (!isAdmin(env, ctx.user?.telegram_id)) return;
     const parts = (ctx.match ?? '').split(/\s+/);
-    if (parts.length < 3) { await ctx.reply('Usage: /credit <telegram_id> <amount> <note>'); return; }
+    if (parts.length < 3) { await ctx.reply('Usage: /credit &lt;telegram_id&gt; &lt;amount&gt; &lt;note&gt;', { parse_mode: 'HTML' }); return; }
     const tid = parseInt(parts[0]!, 10);
     const amt = parseFloat(parts[1]!);
     const note = parts.slice(2).join(' ');

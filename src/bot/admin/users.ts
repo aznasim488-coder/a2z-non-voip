@@ -42,7 +42,8 @@ export async function handleAdminUsers(ctx: BotContext, page = 1): Promise<void>
 
   await ctx.reply(
     `👥 <b>Users</b> (page ${page})\n${HR}\n` + lines.join('\n') +
-    `\n\n/credit <telegram_id> <amount> <note> — add credit`,
+    `\n\n<code>/credit &lt;telegram_id&gt; &lt;amount&gt; &lt;note&gt;</code> — add credit\n` +
+    `<code>/ban &lt;telegram_id&gt;</code> | <code>/unban &lt;telegram_id&gt;</code>`,
     { parse_mode: 'HTML', reply_markup: kb },
   );
 }
