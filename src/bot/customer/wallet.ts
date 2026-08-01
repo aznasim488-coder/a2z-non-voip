@@ -6,8 +6,8 @@ import { cb } from '../ui/codec.js';
 import { InlineKeyboard } from 'grammy';
 import { createInvoice, MIN_TOPUP_CENTS } from '../../payments/nowpayments.js';
 
-// Preset top-up amounts in USD (all ≥ minimum $3)
-const TOPUP_AMOUNTS = [3, 5, 10, 20, 50];
+// Marker text so message handler can identify replies to this prompt
+export const TOPUP_PROMPT_MARKER = 'Enter top-up amount in USD';
 
 export async function handleWallet(ctx: BotContext): Promise<void> {
   const balance = await getBalanceCents(ctx.db, ctx.user.telegram_id);
@@ -39,26 +39,18 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
     (topupLines.length
       ? `<b>Recent top-ups:</b>\n${topupLines.join('\n')}\n\n`
       : '') +
-    `<b>Add Funds:</b>\n` +
     (hasNowPayments
-      ? `Minimum: <b>$${minUsd}</b> — Pay with <b>any crypto</b> (BTC, ETH, USDT, LTC...)\n` +
-        `Select an amount below — you'll choose your coin on the payment page.\n` +
-        `Wallet credited automatically after confirmation. ✅`
+      ? `<b>Add Funds via Crypto:</b>\n` +
+        `• Minimum: <b>$${minUsd}</b>\n` +
+        `• Pay with any coin: BTC, ETH, USDT, LTC, SOL...\n` +
+        `• Wallet credited <b>automatically</b> after confirmation\n\n` +
+        `Tap <b>💎 Top Up</b> and enter your amount.`
       : `Contact admin to add funds manually.`);
 
   const kb = new InlineKeyboard();
-
   if (hasNowPayments) {
-    // Two amounts per row
-    for (let i = 0; i < TOPUP_AMOUNTS.length; i += 2) {
-      const a = TOPUP_AMOUNTS[i]!;
-      const b = TOPUP_AMOUNTS[i + 1];
-      kb.text(`💎 $${a}`, cb('TOPUP_AMT', a));
-      if (b) kb.text(`💎 $${b}`, cb('TOPUP_AMT', b));
-      kb.row();
-    }
+    kb.text('💎 Top Up', cb('TOPUP_ENTER')).row();
   }
-
   kb.text('🏠 Home', cb('HOME'));
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() =>
@@ -66,25 +58,65 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
   );
 }
 
-/** Called when user taps a $X amount button — creates invoice and sends payment link */
-export async function handleTopupAmount(ctx: BotContext, amountUsd: number): Promise<void> {
+/** Send ForceReply prompt asking user to type their top-up amount */
+export async function handleTopupEnter(ctx: BotContext): Promise<void> {
+  const min = (MIN_TOPUP_CENTS / 100).toFixed(2);
+  await ctx.reply(
+    `💎 <b>${TOPUP_PROMPT_MARKER}</b>\n${HR}\n` +
+    `Minimum: <b>$${min}</b>\n` +
+    `You can enter any amount e.g. <code>5</code>, <code>7.50</code>, <code>20</code>\n\n` +
+    `Type your amount below and send:`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: `Min $${min} — e.g. 10`,
+      },
+    },
+  );
+}
+
+/** Called after user types a custom amount in reply to the ForceReply prompt */
+export async function handleTopupCustomAmount(ctx: BotContext, input: string): Promise<void> {
   const apiKey = ctx.env.NOWPAYMENTS_API_KEY;
   if (!apiKey) {
     await ctx.reply('❌ Crypto payments not configured. Contact admin.');
     return;
   }
 
-  // Guard minimum
+  // Parse the input — accept comma or dot decimal separator
+  const cleaned = input.trim().replace(',', '.');
+  const amountUsd = parseFloat(cleaned);
   const minUsd = MIN_TOPUP_CENTS / 100;
+
+  if (isNaN(amountUsd) || amountUsd <= 0) {
+    await ctx.reply(
+      `❌ Invalid amount. Please enter a number like <code>10</code> or <code>7.50</code>.`,
+      { parse_mode: 'HTML' },
+    );
+    return;
+  }
+
   if (amountUsd < minUsd) {
-    await ctx.reply(`❌ Minimum top-up is $${minUsd.toFixed(2)}.`);
+    await ctx.reply(
+      `❌ Minimum top-up is <b>$${minUsd.toFixed(2)}</b>.\n` +
+      `You entered <b>$${amountUsd.toFixed(2)}</b> — please try again.`,
+      { parse_mode: 'HTML' },
+    );
+    return;
+  }
+
+  // Cap at $500 to avoid accidents
+  if (amountUsd > 500) {
+    await ctx.reply('❌ Maximum single top-up is $500. Contact admin for larger amounts.');
     return;
   }
 
   const amountCents = Math.round(amountUsd * 100);
   const ipnUrl = `${ctx.env.PUBLIC_BASE_URL}/webhooks/nowpayments`;
 
-  await ctx.reply('⏳ Creating payment link...').catch(() => undefined);
+  const loadingMsg = await ctx.reply('⏳ Creating your payment link...').catch(() => undefined);
 
   try {
     const invoice = await createInvoice({
@@ -96,25 +128,32 @@ export async function handleTopupAmount(ctx: BotContext, amountUsd: number): Pro
     });
 
     const kb = new InlineKeyboard()
-      .url(`💳 Pay $${amountUsd.toFixed(2)} — Choose Your Crypto`, invoice.invoice_url).row()
-      .text('🔙 Top-up Menu', cb('TOPUP')).row()
-      .text('🏠 Home', cb('HOME'));
+      .url(`💳 Pay $${amountUsd.toFixed(2)} — Pick Your Crypto`, invoice.invoice_url).row()
+      .text('💎 Top Up Again', cb('TOPUP_ENTER')).row()
+      .text('💳 Wallet', cb('TOPUP')).text('🏠 Home', cb('HOME'));
+
+    // Delete the loading message
+    if (loadingMsg) {
+      await ctx.api.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => undefined);
+    }
 
     await ctx.reply(
-      `💎 <b>Payment — $${amountUsd.toFixed(2)}</b>\n${HR}\n` +
-      `Tap the button below to pay.\n` +
-      `You can choose <b>any crypto</b>:\n` +
-      `BTC · ETH · USDT · LTC · BNB · SOL · DOGE · and more\n\n` +
-      `✅ Your wallet will be credited <b>automatically</b> after confirmation.\n` +
-      `⏱️ Usually confirms in <b>1–15 minutes</b> depending on coin.\n\n` +
-      `<i>Invoice ID: ${invoice.id}</i>`,
+      `💎 <b>Payment Link — $${amountUsd.toFixed(2)}</b>\n${HR}\n` +
+      `Tap below to choose your cryptocurrency and pay:\n` +
+      `<i>BTC · ETH · USDT · LTC · BNB · SOL · DOGE · TRX · and more</i>\n\n` +
+      `✅ Wallet credited <b>automatically</b> after confirmation\n` +
+      `⏱ Typically <b>1–15 minutes</b> depending on coin\n\n` +
+      `Invoice: <code>${invoice.id}</code>`,
       { parse_mode: 'HTML', reply_markup: kb },
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     console.error('[wallet] NOWPayments invoice error', msg);
+    if (loadingMsg) {
+      await ctx.api.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => undefined);
+    }
     await ctx.reply(
-      '❌ Could not create payment link. Please try again in a moment.\n' +
+      '❌ Could not create payment link. Please try again.\n' +
       'If this keeps happening, contact admin.',
     );
   }

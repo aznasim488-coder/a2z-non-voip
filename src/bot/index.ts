@@ -22,7 +22,7 @@ import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
 import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
-import { handleWallet, handleTopupAmount } from './customer/wallet.js';
+import { handleWallet, handleTopupEnter, handleTopupCustomAmount, TOPUP_PROMPT_MARKER } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
 import {
   handleReusePrompt,
@@ -189,10 +189,8 @@ export function createBot(
       }
       case 'TOPUP':
         return handleWallet(ctx);
-      case 'TOPUP_AMT': {
-        const amt = parseFloat(parts[1] ?? '5');
-        return handleTopupAmount(ctx, amt);
-      }
+      case 'TOPUP_ENTER':
+        return handleTopupEnter(ctx);
       case 'LOG_MENU':
         return handleLogsMenu(ctx);
       case 'LOG_SMS':
@@ -214,11 +212,19 @@ export function createBot(
     }
   });
 
-  // ── Plain text = search query (no command needed) ────────────────────────
-  // If user just types a service name anywhere, treat it as a search.
+  // ── Plain text ────────────────────────────────────────────────────────────
+  // 1. If it's a reply to the top-up ForceReply prompt → handle as amount
+  // 2. Otherwise treat as service search
   bot.on('message:text', async (ctx) => {
     const text = (ctx.message.text ?? '').trim();
-    if (text.startsWith('/')) return; // ignore slash commands (handled above)
+    if (text.startsWith('/')) return;
+
+    // Detect reply to top-up amount prompt
+    const replyTo = ctx.message.reply_to_message?.text ?? '';
+    if (replyTo.includes(TOPUP_PROMPT_MARKER)) {
+      return handleTopupCustomAmount(ctx, text);
+    }
+
     await handleServiceSearch(ctx, text);
   });
 
