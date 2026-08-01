@@ -28,7 +28,7 @@ RUN npm install --omit=dev --frozen-lockfile
 # Copy compiled output
 COPY --from=builder /app/dist ./dist
 
-# Expose port (Railway sets PORT env var)
-EXPOSE 3001
+# Expose Railway's dynamic port (Railway injects $PORT at runtime)
+EXPOSE 8080
 
 CMD ["node", "dist/index.js"]
