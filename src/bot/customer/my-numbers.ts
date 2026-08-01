@@ -125,6 +125,7 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
 
   // ── Expired number — simplified view ────────────────────────────────────────
   if (isExpired) {
+    const smsRows = await fetchSmsForOrder(ctx, order.id as string);
     const lines = [
       `📱 <b>Number Details</b>`,
       HR,
@@ -133,6 +134,7 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
       `Plan: <b>${typeLabel}</b>`,
       `Status: <b>⏰ EXPIRED</b>`,
       expiryLine(order.end_time as string),
+      ...smsSection(smsRows),
       ``,
       `This number has expired. To use this service again, purchase a new number from Browse.`,
     ];
@@ -146,6 +148,8 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
   }
 
   // ── Active number ────────────────────────────────────────────────────────────
+  const smsRows = await fetchSmsForOrder(ctx, order.id as string);
+
   const lines = [
     `📱 <b>Number Details</b>`,
     HR,
@@ -154,6 +158,7 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
     `Plan: <b>${typeLabel}</b>`,
     `Status: <b>${order.status}</b>`,
     expiryLine(order.end_time as string),
+    ...smsSection(smsRows),
   ];
   if (isLtr) lines.push(`Auto Renew: <b>${arStatus}</b>`);
 
@@ -169,5 +174,39 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb })
     .catch(() => ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb }));
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Fetch last 3 SMS messages for an order (newest first). */
+async function fetchSmsForOrder(
+  ctx: BotContext,
+  orderId: string,
+): Promise<{ body: string; received_at: string }[]> {
+  const { data } = await ctx.db
+    .from('sms_messages')
+    .select('body,received_at')
+    .eq('order_id', orderId)
+    .order('received_at', { ascending: false })
+    .limit(3);
+  return (data ?? []) as { body: string; received_at: string }[];
+}
+
+/** Format SMS rows into message lines with OTP highlight. */
+function smsSection(rows: { body: string; received_at: string }[]): string[] {
+  if (rows.length === 0) return ['\n⏳ <i>Waiting for OTP…</i>'];
+
+  const lines: string[] = ['\n📨 <b>Received OTP(s):</b>'];
+  for (const row of rows) {
+    const otp = row.body.match(/\b(\d{4,8})\b/)?.[1] ?? null;
+    const time = new Date(row.received_at).toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', hour12: true,
+    });
+    if (otp) {
+      lines.push(`🔑 Code: <code>${otp}</code> <i>(${time})</i>`);
+    }
+    lines.push(`<i>${esc(row.body)}</i>`);
+  }
+  return lines;
 }
 
