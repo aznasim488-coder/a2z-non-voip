@@ -22,7 +22,7 @@ import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
 import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
-import { handleWallet, handleTopupEnter, handleTopupCustomAmount, TOPUP_PROMPT_MARKER } from './customer/wallet.js';
+import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
 import {
   handleReusePrompt,
@@ -191,6 +191,8 @@ export function createBot(
         return handleWallet(ctx);
       case 'TOPUP_ENTER':
         return handleTopupEnter(ctx);
+      case 'BINANCE_ENTER':
+        return handleBinanceEnter(ctx);
       case 'LOG_MENU':
         return handleLogsMenu(ctx);
       case 'LOG_SMS':
@@ -219,10 +221,25 @@ export function createBot(
     const text = (ctx.message.text ?? '').trim();
     if (text.startsWith('/')) return;
 
-    // Detect reply to top-up amount prompt
     const replyTo = ctx.message.reply_to_message?.text ?? '';
+
+    // Step 1 reply: NOWPayments amount
     if (replyTo.includes(TOPUP_PROMPT_MARKER)) {
       return handleTopupCustomAmount(ctx, text);
+    }
+
+    // Step 2 reply: Binance display name → ask for amount
+    if (replyTo.includes(BINANCE_NAME_MARKER)) {
+      return handleBinanceNameReply(ctx, text);
+    }
+
+    // Step 3 reply: Binance USDT amount → verify + credit
+    const binancePrefix = BINANCE_AMOUNT_PREFIX;
+    if (replyTo.includes(binancePrefix)) {
+      // Extract sender name encoded in the marker
+      const markerStart = replyTo.indexOf(binancePrefix) + binancePrefix.length;
+      const senderName  = replyTo.slice(markerStart).split('\n')[0]?.trim() ?? '';
+      return handleBinanceAmountReply(ctx, text, senderName);
     }
 
     await handleServiceSearch(ctx, text);

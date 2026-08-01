@@ -33,6 +33,12 @@ const Schema = z
     NOWPAYMENTS_API_KEY: z.string().min(8).optional(),
     NOWPAYMENTS_IPN_SECRET: z.string().min(8).optional(),
     NOWPAYMENTS_BASE_URL: z.string().url().default('https://api.nowpayments.io'),
+
+    // Binance Personal Account API (optional — leave blank to disable)
+    // Requires: API key with Wallet READ permission only (no trading/withdraw)
+    BINANCE_API_KEY:    z.string().min(4).optional(), // Personal Binance API key
+    BINANCE_API_SECRET: z.string().min(4).optional(), // Personal Binance secret
+    BINANCE_ID:         z.string().optional(),         // Your public Binance ID (shown to users)
   })
   .superRefine((v, ctx) => {
     if (v.BOT_MODE === 'webhook') {
@@ -82,3 +88,6 @@ export function isAdmin(env: Env, telegramId: number | undefined): boolean {
 
 export const nowPaymentsEnabled = (env: Env): boolean =>
   Boolean(env.NOWPAYMENTS_API_KEY && env.NOWPAYMENTS_IPN_SECRET);
+
+export const binancePayEnabled = (env: Env): boolean =>
+  Boolean(env.BINANCE_API_KEY && env.BINANCE_API_SECRET && env.BINANCE_ID);
