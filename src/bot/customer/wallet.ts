@@ -180,14 +180,22 @@ export async function handleBinanceEnter(ctx: BotContext): Promise<void> {
   const mid = ctx.env.BINANCE_ID!;
 
   await ctx.reply(
-    `💸 <b>Binance Pay — USDT only</b>\n${HR}\n\n` +
-    `<b>🚨 Binance ID:</b>\n<code>${mid}</code>\n\n` +
+    `💸 <b>Binance Auto Payment</b>\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `🚨 <b>Binance ID:</b>\n<code>${mid}</code>\n\n` +
+    `💱 <b>USDT only</b> – don't send any other coin\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
     `📌 <b>Steps:</b>\n` +
-    `1️⃣ Open Binance → Pay → Send → enter ID above\n` +
-    `2️⃣ Send <b>USDT only</b> — no other coins\n` +
-    `3️⃣ Reply to this message with your <b>Binance display name</b>\n\n` +
-    `⚠️ Your Binance display name is the name shown on your Binance account profile.\n\n` +
-    `<b>${BINANCE_NAME_MARKER}:</b>`,
+    `1️⃣ Send USDT to the Binance ID above\n` +
+    `2️⃣ Enter your Binance account name below\n` +
+    `3️⃣ Enter the amount when asked\n\n` +
+    `⚠️ <b>Important:</b>\n` +
+    `✅ USDT → Automatic recharge in seconds\n` +
+    `❌ Other coins → Manual processing via admin\n\n` +
+    `🤖 24/7 fully automated system\n` +
+    `💵 Minimum: <b>$3.00 USDT</b>\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `👇 <b>${BINANCE_NAME_MARKER}:</b>`,
     {
       parse_mode: 'HTML',
       reply_markup: {
@@ -244,8 +252,8 @@ export async function handleBinanceAmountReply(
     return;
   }
 
-  if (amountUsdt < 1) {
-    await ctx.reply('❌ Minimum Binance Pay top-up is $1.00 USDT.');
+  if (amountUsdt < 3) {
+    await ctx.reply('❌ Minimum Binance Pay top-up is <b>$3.00 USDT</b>.', { parse_mode: 'HTML' });
     return;
   }
 
