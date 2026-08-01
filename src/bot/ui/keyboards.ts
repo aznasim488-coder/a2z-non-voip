@@ -1,13 +1,16 @@
 import { InlineKeyboard } from 'grammy';
 import { cb } from './codec.js';
 
+export const SUPPORT_URL = 'https://t.me/Whoiam31';
+
 /** Main menu keyboard for customers. */
 export function mainMenuKb(): InlineKeyboard {
   return new InlineKeyboard()
     .text('📋 Browse Numbers', cb('SVC_LIST', 1)).row()
     .text('🔍 Search Service', cb('SVC_SRCH')).row()
     .text('📱 My Numbers', cb('NUM_LIST', 1)).text('📊 Logs', cb('LOG_MENU')).row()
-    .text('💳 Wallet', cb('TOPUP'));
+    .text('💳 Wallet', cb('TOPUP')).row()
+    .url('💬 Contact Support', SUPPORT_URL);
 }
 
 /** Admin main menu keyboard. */

@@ -7,6 +7,7 @@ import { InlineKeyboard } from 'grammy';
 import { createInvoice, MIN_TOPUP_CENTS } from '../../payments/nowpayments.js';
 import { verifyPayment } from '../../payments/binancepay.js';
 import { binancePayEnabled, nowPaymentsEnabled } from '../../config/env.js';
+import { SUPPORT_URL } from '../ui/keyboards.js';
 
 // ─── Markers (used to detect ForceReply replies) ─────────────────────────────
 
@@ -62,6 +63,7 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
   const kb = new InlineKeyboard();
   if (hasNowPayments) kb.text('💎 Crypto Top Up', cb('TOPUP_ENTER')).row();
   if (hasBinance)     kb.text('💸 Binance Pay',   cb('BINANCE_ENTER')).row();
+  kb.url('💬 Contact Support', SUPPORT_URL).row();
   kb.text('🏠 Home', cb('HOME'));
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb }).catch(() =>
@@ -285,16 +287,20 @@ export async function handleBinanceAmountReply(
   }
 
   if (!result.matched) {
+    const kb = new InlineKeyboard()
+      .url('💬 Contact Support', SUPPORT_URL).row()
+      .text('🏠 Home', cb('HOME'));
     await ctx.reply(
       `❌ <b>Payment not found</b>\n${HR}\n` +
       `We couldn't find a USDT payment of <b>$${amountUsdt.toFixed(2)}</b> ` +
       `from Binance name <b>${senderName}</b> in the last 45 minutes.\n\n` +
       `<b>Please check:</b>\n` +
       `• Did you send <b>USDT</b> (not BNB or other coins)?\n` +
-      `• Is your display name exactly: <code>${senderName}</code>?\n` +
+      `• Is your Binance display name exactly: <code>${senderName}</code>?\n` +
       `• Did you send to Binance ID <code>${config.binanceId}</code>?\n\n` +
-      `If you're sure you sent it, wait a moment and try again or contact admin.`,
-      { parse_mode: 'HTML' },
+      `If you're sure you sent it, wait a moment and try again.\n` +
+      `Or tap <b>Contact Support</b> below.`,
+      { parse_mode: 'HTML', reply_markup: kb },
     );
     return;
   }
