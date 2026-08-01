@@ -156,7 +156,8 @@ export async function handleBuyExecute(
       `Service: <b>${esc(result.serviceName)}</b>\n` +
       expiryLine(result.endTime) + '\n\n' +
       `💳 New balance: <b>${fc(newBalance)}</b>\n\n` +
-      `Use <b>My Numbers</b> to get your OTP code when it arrives.`,
+      `📨 <b>OTP will appear here automatically</b> when received.\n` +
+      `You can also check <b>My Numbers</b> at any time.`,
       { parse_mode: 'HTML' },
     );
   } catch (e) {
