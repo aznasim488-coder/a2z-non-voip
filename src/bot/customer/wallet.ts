@@ -6,7 +6,7 @@ import { cb } from '../ui/codec.js';
 import { InlineKeyboard } from 'grammy';
 import { createInvoice, MIN_TOPUP_CENTS } from '../../payments/nowpayments.js';
 import { verifyPayment } from '../../payments/binancepay.js';
-import { verifyBkashPayment } from '../../payments/bkash.js';
+import { tkToCents } from '../../payments/bkash.js';
 import { binancePayEnabled, nowPaymentsEnabled, bkashEnabled } from '../../config/env.js';
 import { SUPPORT_URL } from '../ui/keyboards.js';
 
@@ -393,11 +393,11 @@ export async function handleBkashEnter(ctx: BotContext): Promise<void> {
     return;
   }
 
-  const limit  = ctx.env.BKASH_LIMIT_TK;
-  const rate   = ctx.env.BKASH_RATE_TK;
-  const small  = ctx.env.BKASH_NUMBER_SMALL!;
-  const large  = ctx.env.BKASH_NUMBER_LARGE!;
-  const minTk  = ctx.env.BKASH_MIN_TK;
+  const limit = ctx.env.BKASH_LIMIT_TK;
+  const rate  = ctx.env.BKASH_RATE_TK;
+  const small = ctx.env.BKASH_NUMBER_SMALL!;
+  const large = ctx.env.BKASH_NUMBER_LARGE!;
+  const minTk = ctx.env.BKASH_MIN_TK;
 
   await ctx.reply(
     `💹 <b>bKash — BDT Payment</b>\n` +
@@ -409,11 +409,10 @@ export async function handleBkashEnter(ctx: BotContext): Promise<void> {
     `<code>${large}</code>\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `📌 <b>Steps:</b>\n` +
-    `1️⃣ Send Money করুন উপরের নম্বরে\n` +
+    `1️⃣ উপরের নম্বরে Send Money করুন\n` +
     `2️⃣ Transaction ID এখানে paste করুন\n` +
     `3️⃣ Amount (TK) submit করুন\n\n` +
-    `⚠️ Funding Account থেকে পাঠালে সমস্যা হতে পারে\n` +
-    `✅ Bkash App → Send Money ব্যবহার করুন\n\n` +
+    `⏱ Admin verify করার পর wallet এ যোগ হবে\n\n` +
     `👇 <b>${BKASH_TRXID_MARKER}:</b>`,
     {
       parse_mode: 'HTML',
@@ -449,7 +448,7 @@ export async function handleBkashTrxReply(ctx: BotContext, trxId: string): Promi
   );
 }
 
-/** Step 3 — User replied with TK amount → verify via bKash API → credit */
+/** Step 3 — User replied with TK amount → save pending → notify admin */
 export async function handleBkashAmountReply(
   ctx: BotContext,
   input: string,
@@ -462,6 +461,7 @@ export async function handleBkashAmountReply(
 
   const amountTk = parseFloat(input.trim().replace(',', '.'));
   const minTk    = ctx.env.BKASH_MIN_TK;
+  const rateTk   = ctx.env.BKASH_RATE_TK;
 
   if (isNaN(amountTk) || amountTk <= 0) {
     await ctx.reply(`❌ Invalid amount. Enter a number like <code>250</code>.`, { parse_mode: 'HTML' });
@@ -472,42 +472,7 @@ export async function handleBkashAmountReply(
     return;
   }
 
-  const loadingMsg = await ctx.reply('🔍 Verifying your bKash payment...').catch(() => undefined);
-
-  const config = {
-    baseUrl:     ctx.env.BKASH_BASE_URL,
-    appKey:      ctx.env.BKASH_APP_KEY!,
-    appSecret:   ctx.env.BKASH_APP_SECRET!,
-    username:    ctx.env.BKASH_USERNAME!,
-    password:    ctx.env.BKASH_PASSWORD!,
-    numberSmall: ctx.env.BKASH_NUMBER_SMALL!,
-    numberLarge: ctx.env.BKASH_NUMBER_LARGE!,
-    limitTk:     ctx.env.BKASH_LIMIT_TK,
-    rateTk:      ctx.env.BKASH_RATE_TK,
-  };
-
-  const result = await verifyBkashPayment(config, trxId, amountTk);
-
-  if (loadingMsg) {
-    await ctx.api.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => undefined);
-  }
-
-  if (!result.verified) {
-    const kb = new InlineKeyboard()
-      .url('💬 Contact Support', SUPPORT_URL).row()
-      .text('🏠 Home', cb('HOME'));
-    await ctx.reply(
-      `❌ <b>Payment not verified</b>\n${HR}\n` +
-      `TrxID: <code>${trxId}</code>\n` +
-      `Amount submitted: <b>${amountTk} TK</b>\n\n` +
-      `<b>Reason:</b> ${result.reason}\n\n` +
-      `ভুল হলে আবার bKash বাটন ক্লিক করে রি-সাবমিট করুন।`,
-      { parse_mode: 'HTML', reply_markup: kb },
-    );
-    return;
-  }
-
-  // Idempotency — prevent double-credit
+  // Idempotency — prevent duplicate submissions for same TrxID
   const idempotencyKey = `bkash_${trxId}`;
   const { data: existing } = await ctx.db
     .from('ledger_entries')
@@ -517,54 +482,173 @@ export async function handleBkashAmountReply(
 
   if (existing) {
     await ctx.reply(
-      `⚠️ এই TrxID আগেই credit করা হয়েছে।\nTrxID: <code>${trxId}</code>`,
+      `⚠️ এই TrxID আগেই submit করা হয়েছে।\nTrxID: <code>${trxId}</code>`,
       { parse_mode: 'HTML' },
     );
     return;
   }
 
-  const amountCents = Math.round((result.amountUsd ?? 0) * 100);
+  const amountCents = Math.round((amountTk / rateTk) * 100);
+  const amountUsd   = (amountCents / 100).toFixed(2);
+
+  // Save as pending topup
+  await ctx.db.from('topups').insert({
+    user_id:      ctx.user.id,
+    amount_cents: amountCents,
+    method:       'bkash' as any,
+    status:       'pending',
+    external_id:  trxId,
+    note:         `${amountTk} TK @ ${rateTk} TK/$ — pending admin approval`,
+  } as any);
+
+  // Tell user it's pending
+  await ctx.reply(
+    `⏳ <b>bKash Payment Submitted!</b>\n${HR}\n` +
+    `TrxID: <code>${trxId}</code>\n` +
+    `Amount: <b>${amountTk} TK</b> = <b>$${amountUsd}</b>\n\n` +
+    `Admin verify করছেন — সাধারণত কয়েক মিনিটের মধ্যে wallet এ যোগ হবে।\n` +
+    `✅ Approved হলে notification পাবেন।`,
+    { parse_mode: 'HTML' },
+  );
+
+  // Notify every admin with Approve / Reject inline buttons
+  const userName = ctx.user.username ? `@${ctx.user.username}` : ctx.user.first_name;
+  const adminText =
+    `💹 <b>bKash Payment — Pending</b>\n${HR}\n` +
+    `👤 User: ${userName} (<code>${ctx.user.telegram_id}</code>)\n` +
+    `📋 TrxID: <code>${trxId}</code>\n` +
+    `💵 Amount: <b>${amountTk} TK</b> → <b>$${amountUsd}</b>\n\n` +
+    `Check your bKash app and tap below:`;
+
+  const adminKb = new InlineKeyboard()
+    .text(`✅ Approve $${amountUsd}`, cb('BK_APR', ctx.user.telegram_id, trxId, amountCents)).row()
+    .text(`❌ Reject`,                cb('BK_REJ', ctx.user.telegram_id, trxId));
+
+  for (const adminId of ctx.env.ADMIN_TELEGRAM_IDS) {
+    await ctx.api.sendMessage(adminId, adminText, {
+      parse_mode: 'HTML',
+      reply_markup: adminKb,
+    }).catch((e) => console.error(`[bkash] admin notify failed for ${adminId}:`, e));
+  }
+
+  console.log(`[bkash] pending trx=${trxId} user=${ctx.user.id} ${amountTk}TK`);
+}
+
+/** Admin tapped Approve — credit the wallet and notify user */
+export async function handleBkashApprove(
+  ctx: BotContext,
+  userTelegramId: number,
+  trxId: string,
+  amountCents: number,
+): Promise<void> {
+  const idempotencyKey = `bkash_${trxId}`;
+
+  // Check already credited
+  const { data: existing } = await ctx.db
+    .from('ledger_entries')
+    .select('id')
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle();
+
+  if (existing) {
+    await ctx.editMessageText(`⚠️ Already credited. TrxID: <code>${trxId}</code>`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  // Get user record
+  const { data: userRow } = await ctx.db
+    .from('users')
+    .select('id')
+    .eq('telegram_id', userTelegramId)
+    .maybeSingle();
+
+  if (!userRow) {
+    await ctx.editMessageText(`❌ User not found: ${userTelegramId}`, { parse_mode: 'HTML' });
+    return;
+  }
 
   try {
     await creditWallet(ctx.db, {
-      userId: ctx.user.id,
+      userId: userRow.id,
       amountCents,
       kind: 'topup',
       idempotencyKey,
-      note: `bKash TrxID: ${trxId} — ${result.amountTk} TK`,
+      note: `bKash approved by admin — TrxID: ${trxId}`,
     });
 
-    await ctx.db.from('topups').insert({
-      user_id:      ctx.user.id,
-      amount_cents: amountCents,
-      method:       'bkash' as any,
-      status:       'confirmed',
-      external_id:  trxId,
-      note:         `${result.amountTk} TK @ ${config.rateTk} TK/$`,
-    } as any);
+    // Update topup status to confirmed
+    await ctx.db
+      .from('topups')
+      .update({ status: 'confirmed' })
+      .eq('external_id', trxId);
 
-    const newBalance = await getBalanceCents(ctx.db, ctx.user.telegram_id);
-    const kb = new InlineKeyboard()
+    const amountUsd = (amountCents / 100).toFixed(2);
+
+    // Update admin message
+    await ctx.editMessageText(
+      `✅ <b>Approved & Credited</b>\nTrxID: <code>${trxId}</code> → $${amountUsd} → user ${userTelegramId}`,
+      { parse_mode: 'HTML' },
+    );
+
+    // Notify the user
+    const { data: newBalRow } = await ctx.db
+      .from('users')
+      .select('balance_cents')
+      .eq('telegram_id', userTelegramId)
+      .maybeSingle();
+
+    const newBal = formatCents(newBalRow?.balance_cents ?? amountCents);
+    const userKb = new InlineKeyboard()
       .text('💳 Wallet', cb('TOPUP'))
       .text('📲 Buy Number', cb('SVC_LIST', 1)).row()
       .text('🏠 Home', cb('HOME'));
 
-    await ctx.reply(
-      `✅ <b>bKash Payment Verified!</b>\n${HR}\n` +
-      `💹 Amount: <b>${result.amountTk} TK</b>\n` +
-      `💵 Credited: <b>$${((result.amountUsd ?? 0)).toFixed(2)}</b>\n` +
-      `💳 New balance: <b>${formatCents(newBalance)}</b>\n\n` +
+    await ctx.api.sendMessage(
+      userTelegramId,
+      `✅ <b>bKash Payment Approved!</b>\n${HR}\n` +
+      `TrxID: <code>${trxId}</code>\n` +
+      `💵 Credited: <b>$${amountUsd}</b>\n` +
+      `💳 New balance: <b>${newBal}</b>\n\n` +
       `আপনার wallet এ টাকা যোগ হয়েছে! 🎉`,
-      { parse_mode: 'HTML', reply_markup: kb },
+      { parse_mode: 'HTML', reply_markup: userKb },
     );
 
-    console.log(`[bkash] credited user ${ctx.user.id} ${result.amountTk}TK=$${result.amountUsd?.toFixed(2)} trx:${trxId}`);
+    console.log(`[bkash] approved trx=${trxId} user=${userTelegramId} $${amountUsd}`);
   } catch (e) {
-    console.error('[bkash] credit failed:', e);
-    await ctx.reply(
-      `❌ Verification ok but credit failed.\nTrxID: <code>${trxId}</code>\nContact support.`,
-      { parse_mode: 'HTML' },
-    );
+    console.error('[bkash] approve failed:', e);
+    await ctx.editMessageText(`❌ Credit failed. TrxID: ${trxId}. Check logs.`);
   }
 }
 
+/** Admin tapped Reject — notify user */
+export async function handleBkashReject(
+  ctx: BotContext,
+  userTelegramId: number,
+  trxId: string,
+): Promise<void> {
+  // Update topup status
+  await ctx.db
+    .from('topups')
+    .update({ status: 'failed' })
+    .eq('external_id', trxId);
+
+  await ctx.editMessageText(
+    `❌ <b>Rejected</b>\nTrxID: <code>${trxId}</code> — user ${userTelegramId} notified.`,
+    { parse_mode: 'HTML' },
+  );
+
+  const userKb = new InlineKeyboard()
+    .url('💬 Contact Support', SUPPORT_URL).row()
+    .text('🏠 Home', cb('HOME'));
+
+  await ctx.api.sendMessage(
+    userTelegramId,
+    `❌ <b>bKash Payment Rejected</b>\n${HR}\n` +
+    `TrxID: <code>${trxId}</code>\n\n` +
+    `আপনার payment verify হয়নি।\n` +
+    `সমস্যা হলে Support এ contact করুন।`,
+    { parse_mode: 'HTML', reply_markup: userKb },
+  ).catch(() => undefined);
+
+  console.log(`[bkash] rejected trx=${trxId} user=${userTelegramId}`);
+}

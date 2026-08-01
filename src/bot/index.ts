@@ -22,7 +22,7 @@ import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
 import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
-import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX } from './customer/wallet.js';
+import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, handleBkashApprove, handleBkashReject, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
 import {
   handleReusePrompt,
@@ -195,6 +195,17 @@ export function createBot(
         return handleBinanceEnter(ctx);
       case 'BKASH_ENTER':
         return handleBkashEnter(ctx);
+      case 'BK_APR': {
+        const tid   = parseInt(parts[1] ?? '0');
+        const trxId = parts[2] ?? '';
+        const cents = parseInt(parts[3] ?? '0');
+        return handleBkashApprove(ctx, tid, trxId, cents);
+      }
+      case 'BK_REJ': {
+        const tid   = parseInt(parts[1] ?? '0');
+        const trxId = parts[2] ?? '';
+        return handleBkashReject(ctx, tid, trxId);
+      }
       case 'LOG_MENU':
         return handleLogsMenu(ctx);
       case 'LOG_SMS':
