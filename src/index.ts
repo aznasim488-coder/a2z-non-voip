@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import { run } from '@grammyjs/runner';
+import { webhookCallback } from 'grammy';
 
 import { loadEnv } from './config/env.js';
 import { getDb } from './db/index.js';
@@ -63,8 +64,16 @@ app.post('/webhooks/nowpayments', async (req, reply) => {
   }
   return reply.send({ ok: true });
 });
+// Telegram webhook — grammY handles updates, secret token verified
+// Route registered regardless of mode so it's ready when we switch
+app.post(
+  `/webhooks/telegram/${env.TELEGRAM_WEBHOOK_SECRET}`,
+  webhookCallback(bot, 'fastify', {
+    secretToken: env.TELEGRAM_WEBHOOK_SECRET,
+    timeoutMilliseconds: 10_000,
+  }),
+);
 
-// PVADeals webhook — secret path segment acts as auth (no signature scheme)
 app.post(
   `/webhooks/pvadeals/${env.PVADEALS_WEBHOOK_SECRET}`,
   async (req, reply) => {
