@@ -93,7 +93,7 @@ app.post(
       if (event.event === 'sms_received' && event.requestId && event.message) {
         const { data: order } = await db
           .from('orders')
-          .select('id, user_id, type, profiles!inner(telegram_id)')
+          .select('id, user_id, plan, profiles!inner(telegram_id)')
           .eq('request_id', event.requestId)
           .single();
 
@@ -101,7 +101,7 @@ app.post(
           const orderId  = (order as any).id as string;
           const userId   = (order as any).user_id as string;
           const tid      = (order as any).profiles.telegram_id as number;
-          const orderType = (order as any).type as string | undefined;
+          const orderPlan = (order as any).plan as string | undefined;
 
           // 1. Store SMS message
           await db.from('sms_messages').insert({
@@ -123,7 +123,7 @@ app.post(
           const otp = extractOtp(event.message);
 
           // Fetch reuse cost for STR tip
-          const isStr = !orderType || orderType === 'STR';
+          const isStr = !orderPlan || orderPlan === 'STR';
           let reuseNote = '';
           if (isStr) {
             const { data: settings } = await db.from('settings').select('reuse_cost_cents').single();

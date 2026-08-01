@@ -117,11 +117,12 @@ export class ReconcileSweep {
   private async refundExpiredStr(): Promise<void> {
     const cutoff = new Date(Date.now() - STR_EXPIRE_MIN * 60_000).toISOString();
 
+    // STR orders have plan = 'STR'. Filter by status RESERVED + old enough
     const { data: expiredStrs } = await this.db
       .from('orders')
       .select('id,user_id,sell_cents,number,service_name')
       .eq('status', 'RESERVED')
-      .eq('type', 'STR')
+      .eq('plan', 'STR')
       .lt('created_at', cutoff);
 
     if (!expiredStrs || expiredStrs.length === 0) return;
@@ -169,11 +170,13 @@ export class ReconcileSweep {
   private async refundExpiredLtr(): Promise<void> {
     const now = new Date().toISOString();
 
+    // LTR orders have plan IN ('LTR3','LTR7','LTR14','LTR30')
+    // We filter by end_time < now() to catch expired ones
     const { data: expiredLtrs } = await this.db
       .from('orders')
       .select('id,user_id,sell_cents,number,service_name,is_renewed')
       .eq('status', 'RESERVED')
-      .eq('type', 'LTR')
+      .in('plan', ['LTR3', 'LTR7', 'LTR14', 'LTR30'])
       .lt('end_time', now);
 
     if (!expiredLtrs || expiredLtrs.length === 0) return;
