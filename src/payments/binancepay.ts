@@ -13,7 +13,6 @@
  *   ✅ Enable Reading (Wallet)
  *   ❌ Trading NOT required
  *   ❌ Withdrawals NOT required
- *   ✅ Restrict to trusted IPs recommended
  */
 
 import { createHmac } from 'node:crypto';
@@ -23,10 +22,10 @@ import { createHmac } from 'node:crypto';
 export interface BinancePersonalConfig {
   apiKey: string;       // Personal Binance API key (Read permission)
   secretKey: string;    // Personal Binance API secret
-  binanceId: string;    // Your public Binance ID shown to users e.g. "443874127"
+  binanceId: string;    // Your public Binance ID shown to users e.g. "902685580"
 }
 
-/** One outgoing or incoming Binance Pay transfer on a personal account. */
+/** One incoming Binance Pay C2C transfer. */
 export interface BinancePayTx {
   orderType: string;          // 'C2C' for person-to-person
   transactionId: string;
@@ -34,7 +33,7 @@ export interface BinancePayTx {
   amount: string;             // '10.00000000'
   currency: string;           // 'USDT'
   payerInfo: {
-    name: string;             // Sender's display name — what user sees in Binance app
+    name: string;             // Sender display name
     type: string;
     binanceId: string;
     accountId: string;
@@ -56,46 +55,45 @@ export interface VerifyResult {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BASE_URL         = 'https://api.binance.com';
-const AMOUNT_TOLERANCE = 0.02;        // $0.02 tolerance for rounding
+const AMOUNT_TOLERANCE = 0.02;         // $0.02 rounding tolerance
 const MATCH_WINDOW_MS  = 45 * 60_000; // look back 45 minutes
 
-// ─── Signature (standard Binance HMAC-SHA256) ─────────────────────────────────
+// ─── HMAC-SHA256 signature ────────────────────────────────────────────────────
 
 function sign(secretKey: string, queryString: string): string {
   return createHmac('sha256', secretKey).update(queryString).digest('hex');
 }
 
-// ─── Fetch recent INCOMING Pay transactions ────────────────────────────────────
+// ─── Fetch recent INCOMING Pay transactions ───────────────────────────────────
 
 /**
  * Returns recent USDT Pay transactions received on this account.
- * Only transactions where THIS account is the RECEIVER are returned.
+ * Only transactions where THIS account is the RECEIVER are kept.
  */
 export async function listRecentTransactions(
   config: BinancePersonalConfig,
 ): Promise<BinancePayTx[]> {
-  const endTime   = Date.now();
-  const startTime = endTime - MATCH_WINDOW_MS;
+  const now       = Date.now();
+  const startTime = now - MATCH_WINDOW_MS;
 
+  // Build query — use single timestamp value to avoid recvWindow errors
   const params = new URLSearchParams({
     startTimestamp: String(startTime),
-    endTimestamp:   String(endTime),
-    timestamp:      String(Date.now()),
+    endTimestamp:   String(now),
+    timestamp:      String(now),
     limit:          '100',
+    recvWindow:     '60000',   // 60s tolerance for clock skew
   });
 
-  const signature = sign(config.secretKey, params.toString());
-  params.set('signature', signature);
+  params.append('signature', sign(config.secretKey, params.toString()));
 
-  const url = `${BASE_URL}/sapi/v1/pay/transactions?${params.toString()}`;
-
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-MBX-APIKEY': config.apiKey,
-      'Content-Type': 'application/json',
+  const res = await fetch(
+    `${BASE_URL}/sapi/v1/pay/transactions?${params.toString()}`,
+    {
+      method: 'GET',
+      headers: { 'X-MBX-APIKEY': config.apiKey },
     },
-  });
+  );
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -109,10 +107,10 @@ export async function listRecentTransactions(
   };
 
   if (json.code !== '000000') {
-    throw new Error(`Binance API returned code ${json.code}: ${json.message}`);
+    throw new Error(`Binance API code ${json.code}: ${json.message}`);
   }
 
-  // Only keep incoming USDT payments (where WE are the receiver)
+  // Keep only incoming USDT C2C payments where we are receiver
   return (json.data ?? []).filter(
     (tx) =>
       tx.currency === 'USDT' &&
@@ -124,10 +122,8 @@ export async function listRecentTransactions(
 // ─── Verify a specific payment ────────────────────────────────────────────────
 
 /**
- * Search recent transactions for one matching:
- *   • sender display name (case-insensitive, partial match allowed)
- *   • USDT amount (±$0.02 tolerance)
- *   • received in the last 45 minutes
+ * Match by sender display name (case-insensitive) + amount (±$0.02).
+ * Looks back 45 minutes.
  */
 export async function verifyPayment(
   config: BinancePersonalConfig,
@@ -148,12 +144,13 @@ export async function verifyPayment(
   const normalizedInput = senderName.trim().toLowerCase();
 
   for (const tx of transactions) {
-    const txName    = (tx.payerInfo?.name ?? '').trim().toLowerCase();
-    const txAmount  = parseFloat(tx.amount);
-    const amountOk  = Math.abs(txAmount - expectedAmountUsdt) <= AMOUNT_TOLERANCE;
-    const nameOk    = txName === normalizedInput ||
-                      txName.includes(normalizedInput) ||
-                      normalizedInput.includes(txName);
+    const txName   = (tx.payerInfo?.name ?? '').trim().toLowerCase();
+    const txAmount = parseFloat(tx.amount);
+    const amountOk = Math.abs(txAmount - expectedAmountUsdt) <= AMOUNT_TOLERANCE;
+    const nameOk   =
+      txName === normalizedInput ||
+      txName.includes(normalizedInput) ||
+      normalizedInput.includes(txName);
 
     if (amountOk && nameOk) {
       return { matched: true, transaction: tx };
@@ -162,6 +159,6 @@ export async function verifyPayment(
 
   return {
     matched: false,
-    reason: `No USDT payment of $${expectedAmountUsdt.toFixed(2)} from "${senderName}" found in the last 45 minutes.`,
+    reason: `No USDT payment of $${expectedAmountUsdt.toFixed(2)} from "${senderName}" found in last 45 min.`,
   };
 }
