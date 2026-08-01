@@ -186,22 +186,30 @@ export async function handleBinanceEnter(ctx: BotContext): Promise<void> {
     `💱 <b>USDT only</b> – don't send any other coin\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `📌 <b>Steps:</b>\n` +
-    `1️⃣ Send USDT to the Binance ID above\n` +
-    `2️⃣ Enter your Binance account name below\n` +
-    `3️⃣ Enter the amount when asked\n\n` +
+    `1️⃣ Send USDT to the Binance ID above
+` +
+    `2️⃣ Enter your Binance <b>display name</b> below
+` +
+    `   <i>(Your full name shown in Binance profile — NOT username/ID)</i>
+` +
+    `3️⃣ Enter the amount when asked
+
+` +
     `⚠️ <b>Important:</b>\n` +
     `✅ USDT → Automatic recharge in seconds\n` +
     `❌ Other coins → Manual processing via admin\n\n` +
     `🤖 24/7 fully automated system\n` +
     `💵 Minimum: <b>$3.00 USDT</b>\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
-    `👇 <b>${BINANCE_NAME_MARKER}:</b>`,
+    `👇 <b>${BINANCE_NAME_MARKER}:</b>
+` +
+    `<i>Enter the name shown on your Binance profile (e.g. "John Doe")</i>`,
     {
       parse_mode: 'HTML',
       reply_markup: {
         force_reply: true,
         selective: true,
-        input_field_placeholder: 'Your Binance display name',
+        input_field_placeholder: 'Your Binance display name (e.g. John Doe)',
       },
     },
   );

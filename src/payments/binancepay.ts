@@ -1,39 +1,25 @@
 /**
  * Binance Personal Account — Pay Transaction Query
- *
- * Uses the standard Binance REST API (api.binance.com), NOT the merchant API.
- * Requires a personal Binance API key with "Wallet" READ permission only.
- * No merchant account needed.
- *
- * Docs: https://developers.binance.com/docs/wallet/balance/fetch-pay-trade-history
- * Endpoint: GET /sapi/v1/pay/transactions
- * Auth: HMAC-SHA256 on query string (standard Binance API auth)
- *
- * Permissions required on API key:
- *   ✅ Enable Reading (Wallet)
- *   ❌ Trading NOT required
- *   ❌ Withdrawals NOT required
+ * GET /sapi/v1/pay/transactions
+ * Requires: personal API key with Enable Reading
  */
 
 import { createHmac } from 'node:crypto';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 export interface BinancePersonalConfig {
-  apiKey: string;       // Personal Binance API key (Read permission)
-  secretKey: string;    // Personal Binance API secret
-  binanceId: string;    // Your public Binance ID shown to users e.g. "902685580"
+  apiKey: string;
+  secretKey: string;
+  binanceId: string;
 }
 
-/** One incoming Binance Pay C2C transfer. */
 export interface BinancePayTx {
-  orderType: string;          // 'C2C' for person-to-person
+  orderType: string;
   transactionId: string;
-  transactionTime: number;    // Unix ms
-  amount: string;             // '10.00000000'
+  transactionTime: number;
+  amount: string;             // '3.00000000'
   currency: string;           // 'USDT'
   payerInfo: {
-    name: string;             // Sender display name
+    name: string;             // Display name of sender
     type: string;
     binanceId: string;
     accountId: string;
@@ -52,78 +38,59 @@ export interface VerifyResult {
   reason?: string;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const BASE_URL         = 'https://api.binance.com';
-const AMOUNT_TOLERANCE = 0.02;         // $0.02 rounding tolerance
+const BASE_URL        = 'https://api.binance.com';
+const AMOUNT_TOLERANCE = 0.05;         // $0.05 — covers any fee rounding
 const MATCH_WINDOW_MS  = 45 * 60_000; // look back 45 minutes
-
-// ─── HMAC-SHA256 signature ────────────────────────────────────────────────────
 
 function sign(secretKey: string, queryString: string): string {
   return createHmac('sha256', secretKey).update(queryString).digest('hex');
 }
 
-// ─── Fetch recent INCOMING Pay transactions ───────────────────────────────────
-
-/**
- * Returns recent USDT Pay transactions received on this account.
- * Only transactions where THIS account is the RECEIVER are kept.
- */
+/** Fetch ALL recent Pay transactions for this account (incoming + outgoing). */
 export async function listRecentTransactions(
   config: BinancePersonalConfig,
 ): Promise<BinancePayTx[]> {
   const now       = Date.now();
   const startTime = now - MATCH_WINDOW_MS;
 
-  // Build query — use single timestamp value to avoid recvWindow errors
   const params = new URLSearchParams({
     startTimestamp: String(startTime),
     endTimestamp:   String(now),
     timestamp:      String(now),
     limit:          '100',
-    recvWindow:     '60000',   // 60s tolerance for clock skew
+    recvWindow:     '60000',
   });
 
   params.append('signature', sign(config.secretKey, params.toString()));
 
   const res = await fetch(
     `${BASE_URL}/sapi/v1/pay/transactions?${params.toString()}`,
-    {
-      method: 'GET',
-      headers: { 'X-MBX-APIKEY': config.apiKey },
-    },
+    { headers: { 'X-MBX-APIKEY': config.apiKey } },
   );
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Binance API error ${res.status}: ${text}`);
-  }
 
   const json = await res.json() as {
     code: string;
     message: string;
     data: BinancePayTx[];
+    success?: boolean;
   };
 
-  if (json.code !== '000000') {
-    throw new Error(`Binance API code ${json.code}: ${json.message}`);
+  // Log full raw response for debugging — visible in Railway console
+  console.log('[binance-pay] raw API response:', JSON.stringify(json, null, 2));
+
+  if (!res.ok || json.code !== '000000') {
+    throw new Error(`Binance API error: ${json.message ?? res.status}`);
   }
 
-  // Keep only incoming USDT C2C payments where we are receiver
-  return (json.data ?? []).filter(
-    (tx) =>
-      tx.currency === 'USDT' &&
-      tx.orderType === 'C2C' &&
-      tx.receiverInfo?.binanceId === config.binanceId,
-  );
+  return json.data ?? [];
 }
 
-// ─── Verify a specific payment ────────────────────────────────────────────────
-
 /**
- * Match by sender display name (case-insensitive) + amount (±$0.02).
- * Looks back 45 minutes.
+ * Verify payment by matching amount (±$0.05) across ALL transactions.
+ * Name match is lenient: checks if entered name appears anywhere in payerInfo.name
+ * (handles display name vs username differences).
+ *
+ * If name doesn't match but amount matches, we log it so admin can see.
  */
 export async function verifyPayment(
   config: BinancePersonalConfig,
@@ -143,22 +110,42 @@ export async function verifyPayment(
 
   const normalizedInput = senderName.trim().toLowerCase();
 
+  console.log(`[binance-pay] checking ${transactions.length} transactions for name="${senderName}" amount=${expectedAmountUsdt}`);
+
+  // Log all recent transactions for debugging
   for (const tx of transactions) {
+    console.log(`[binance-pay] tx: id=${tx.transactionId} amount=${tx.amount} ${tx.currency} payer="${tx.payerInfo?.name}" receiver="${tx.receiverInfo?.name}" type=${tx.orderType}`);
+  }
+
+  // Try full match first: amount + name
+  for (const tx of transactions) {
+    if (tx.currency !== 'USDT') continue;
+
     const txName   = (tx.payerInfo?.name ?? '').trim().toLowerCase();
     const txAmount = parseFloat(tx.amount);
     const amountOk = Math.abs(txAmount - expectedAmountUsdt) <= AMOUNT_TOLERANCE;
     const nameOk   =
-      txName === normalizedInput ||
       txName.includes(normalizedInput) ||
-      normalizedInput.includes(txName);
+      normalizedInput.includes(txName) ||
+      txName === normalizedInput;
 
     if (amountOk && nameOk) {
+      console.log(`[binance-pay] ✅ matched tx ${tx.transactionId}`);
       return { matched: true, transaction: tx };
+    }
+  }
+
+  // Soft match: amount only (log it so admin is aware but don't auto-credit)
+  for (const tx of transactions) {
+    if (tx.currency !== 'USDT') continue;
+    const txAmount = parseFloat(tx.amount);
+    if (Math.abs(txAmount - expectedAmountUsdt) <= AMOUNT_TOLERANCE) {
+      console.log(`[binance-pay] ⚠️ amount-only match tx ${tx.transactionId} payer="${tx.payerInfo?.name}" — name mismatch with "${senderName}"`);
     }
   }
 
   return {
     matched: false,
-    reason: `No USDT payment of $${expectedAmountUsdt.toFixed(2)} from "${senderName}" found in last 45 min.`,
+    reason: `No USDT payment of $${expectedAmountUsdt.toFixed(2)} from "${senderName}" found. Check Railway console for raw transaction data.`,
   };
 }
