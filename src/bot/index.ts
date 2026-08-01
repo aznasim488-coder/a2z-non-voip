@@ -22,7 +22,7 @@ import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
 import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
-import { handleWallet } from './customer/wallet.js';
+import { handleWallet, handleTopupAmount } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
 import {
   handleReusePrompt,
@@ -189,6 +189,10 @@ export function createBot(
       }
       case 'TOPUP':
         return handleWallet(ctx);
+      case 'TOPUP_AMT': {
+        const amt = parseFloat(parts[1] ?? '5');
+        return handleTopupAmount(ctx, amt);
+      }
       case 'LOG_MENU':
         return handleLogsMenu(ctx);
       case 'LOG_SMS':

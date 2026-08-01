@@ -9,6 +9,7 @@ import { createBot } from './bot/index.js';
 import { CatalogSync } from './jobs/catalog-sync.js';
 import { BalanceWatch } from './jobs/balance-watch.js';
 import { ReconcileSweep } from './jobs/reconcile.js';
+import { processNowPaymentsIpn, verifyIpnSignature } from './payments/nowpayments.js';
 
 const env = loadEnv();
 const db = getDb(env);
@@ -42,6 +43,26 @@ app.addContentTypeParser(
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/health', async () => ({ ok: true, mode: env.BOT_MODE }));
+
+// NOWPayments IPN webhook — HMAC-SHA512 verified
+app.post('/webhooks/nowpayments', async (req, reply) => {
+  const ipnSecret = env.NOWPAYMENTS_IPN_SECRET;
+  if (!ipnSecret) return reply.code(404).send();
+
+  const sig = (req.headers['x-nowpayments-sig'] as string) ?? '';
+
+  if (!verifyIpnSignature(req.body, sig, ipnSecret)) {
+    app.log.warn('NOWPayments IPN: invalid signature');
+    return reply.code(401).send({ error: 'invalid signature' });
+  }
+
+  try {
+    await processNowPaymentsIpn(req.body, db);
+  } catch (e) {
+    app.log.error({ err: e }, 'NOWPayments IPN processing error');
+  }
+  return reply.send({ ok: true });
+});
 
 // PVADeals webhook — secret path segment acts as auth (no signature scheme)
 app.post(
