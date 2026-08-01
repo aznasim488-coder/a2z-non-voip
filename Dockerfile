@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY src ./src
 RUN npm run build
 
 # ── Stage 2: Production image ─────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
@@ -28,7 +28,7 @@ RUN npm install --omit=dev --frozen-lockfile
 # Copy compiled output
 COPY --from=builder /app/dist ./dist
 
-# Expose Railway's dynamic port (Railway injects $PORT at runtime)
-EXPOSE 8080
+# Expose port (Railway forwards to this port)
+EXPOSE 3001
 
 CMD ["node", "dist/index.js"]
