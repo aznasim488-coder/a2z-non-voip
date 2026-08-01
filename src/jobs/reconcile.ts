@@ -27,7 +27,7 @@ const STALE_MS         = 90_000;       // stale order threshold
 const EXPIRE_SWEEP_MS  = 5 * 60_000;  // B: initial purchase expiry sweep
 const REUSE_SWEEP_MS   = 2 * 60_000;  // C: reuse expiry sweep (faster — 10-min window)
 const STR_EXPIRE_MIN   = 21;          // PVADeals STR window = 20 min; refund after 21 min
-const REUSE_EXPIRE_MIN = 10;          // STR reuse window = 10 min
+const REUSE_EXPIRE_MIN = 11;          // STR reuse window = 10 min; +1 min buffer so PVADeals refunds first
 
 export class ReconcileSweep {
   private timer: ReturnType<typeof setInterval> | null = null;
