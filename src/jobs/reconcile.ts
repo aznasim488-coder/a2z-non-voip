@@ -1,16 +1,17 @@
 /**
- * Reconciliation sweep — two jobs in one:
+ * Reconciliation sweep — three jobs:
  *
  * A) CRASH RECOVERY (every 90 s)
- *    Heals orders that got stuck between debitWallet and updateOrderSuccess
- *    (server crash window). Tries to match upstream request; auto-refunds if
- *    not found.
+ *    Heals orders stuck between debitWallet and updateOrderSuccess.
  *
  * B) EXPIRED-WITHOUT-OTP REFUND (every 5 min)
- *    When a RESERVED number expires without ever getting an OTP:
- *      • STR: expires ~20 min after purchase → refund after 25 min
- *      • LTR: expires at end_time → refund if is_renewed = false
- *    If is_renewed = true (user manually renewed) → NO refund, just mark EXPIRED.
+ *    STR RESERVED > 25 min old → refund.
+ *    LTR RESERVED past end_time AND is_renewed=false → refund.
+ *    LTR RESERVED past end_time AND is_renewed=true  → EXPIRED, no refund.
+ *
+ * C) STR REUSE EXPIRY REFUND (every 2 min)
+ *    STR reuse window is 10 min. If no new SMS arrives within 10 min of a
+ *    reuse debit, refund the $0.80 charge automatically.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { PvaDealsClient } from '../upstream/client.js';
@@ -21,14 +22,17 @@ import { getPendingOrders, updateOrderSuccess, updateOrderFailed } from '../doma
 import { creditWallet } from '../domain/wallet.js';
 import { formatCents } from '../domain/money.js';
 
-const SWEEP_MS        = 90_000;   // crash-recovery sweep interval
-const STALE_MS        = 90_000;   // age before order is "stale" for crash recovery
-const EXPIRE_SWEEP_MS = 5 * 60_000; // expired-without-OTP sweep interval
-const STR_EXPIRE_MIN  = 25;       // STR expires ~20 min; we refund after 25 min
+const SWEEP_MS         = 90_000;       // crash-recovery interval
+const STALE_MS         = 90_000;       // stale order threshold
+const EXPIRE_SWEEP_MS  = 5 * 60_000;  // B: initial purchase expiry sweep
+const REUSE_SWEEP_MS   = 2 * 60_000;  // C: reuse expiry sweep (faster — 10-min window)
+const STR_EXPIRE_MIN   = 25;          // refund STR initial purchase after 25 min
+const REUSE_EXPIRE_MIN = 10;          // STR reuse window is 10 min
 
 export class ReconcileSweep {
   private timer: ReturnType<typeof setInterval> | null = null;
   private expireTimer: ReturnType<typeof setInterval> | null = null;
+  private reuseTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly db: SupabaseClient,
@@ -43,14 +47,20 @@ export class ReconcileSweep {
     if (this.timer.unref) this.timer.unref();
 
     // B) Expired-without-OTP refund sweep (run immediately + every 5 min)
-    setTimeout(() => void this.expiredRefundSweep(), 10_000); // initial delay 10s
+    setTimeout(() => void this.expiredRefundSweep(), 10_000);
     this.expireTimer = setInterval(() => void this.expiredRefundSweep(), EXPIRE_SWEEP_MS);
     if (this.expireTimer.unref) this.expireTimer.unref();
+
+    // C) STR reuse expiry refund (every 2 min — fast response to 10-min window)
+    setTimeout(() => void this.refundExpiredReuseStr(), 30_000);
+    this.reuseTimer = setInterval(() => void this.refundExpiredReuseStr(), REUSE_SWEEP_MS);
+    if (this.reuseTimer.unref) this.reuseTimer.unref();
   }
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.expireTimer) { clearInterval(this.expireTimer); this.expireTimer = null; }
+    if (this.reuseTimer) { clearInterval(this.reuseTimer); this.reuseTimer = null; }
   }
 
   // ── A: Crash recovery ──────────────────────────────────────────────────────
@@ -223,6 +233,89 @@ export class ReconcileSweep {
       } catch (e) {
         console.error(`[reconcile] LTR expire error ${order.id}:`, e instanceof Error ? e.message : e);
       }
+    }
+  }
+
+  // ── C: STR reuse expiry refund ──────────────────────────────────────────────
+
+  /**
+   * Find STR reuse debits older than 10 min with no new SMS after them.
+   * Strategy:
+   *   1. Query ledger_entries WHERE kind='reuse' AND created_at between 10min–24h ago
+   *      (24h cap avoids scanning the whole table forever)
+   *   2. For each, check sms_messages for any entry on same order AFTER the reuse time
+   *   3. If no SMS found → refund; idempotency key prevents double-refund
+   */
+  private async refundExpiredReuseStr(): Promise<void> {
+    try {
+      const cutoffOld = new Date(Date.now() - REUSE_EXPIRE_MIN * 60_000).toISOString();
+      const cutoffNew = new Date(Date.now() - 24 * 60 * 60_000).toISOString(); // max 24h back
+
+      const { data: reuseEntries } = await this.db
+        .from('ledger_entries')
+        .select('id,user_id,amount_cents,idempotency_key,order_id,created_at')
+        .eq('kind', 'reuse')
+        .lt('created_at', cutoffOld)   // older than 10 min
+        .gt('created_at', cutoffNew);  // but not older than 24 h
+
+      if (!reuseEntries || reuseEntries.length === 0) return;
+
+      for (const entry of reuseEntries as {
+        id: string;
+        user_id: string;
+        amount_cents: number;
+        idempotency_key: string;
+        order_id: string | null;
+        created_at: string;
+      }[]) {
+        if (!entry.order_id) continue;
+
+        const refundKey = `${entry.idempotency_key}_reuse_expire_refund`;
+
+        // Skip if already refunded (idempotency check)
+        const { data: existing } = await this.db
+          .from('ledger_entries')
+          .select('id')
+          .eq('idempotency_key', refundKey)
+          .maybeSingle();
+        if (existing) continue;
+
+        // Check if a new SMS arrived AFTER this reuse request
+        const { data: sms } = await this.db
+          .from('sms_messages')
+          .select('id')
+          .eq('order_id', entry.order_id)
+          .gt('received_at', entry.created_at)
+          .limit(1)
+          .maybeSingle();
+
+        if (sms) continue; // OTP arrived — no refund needed
+
+        // No OTP in 10 min → refund the reuse charge
+        const reuseCents = Math.abs(entry.amount_cents);
+        try {
+          await creditWallet(this.db, {
+            userId: entry.user_id,
+            amountCents: reuseCents,
+            kind: 'refund',
+            idempotencyKey: refundKey,
+            note: 'Auto-refund: STR reuse expired (no OTP in 10 min)',
+          });
+
+          await this.dmUser(
+            entry.user_id,
+            `🔄 <b>Reuse Refund</b>\n` +
+            `No OTP arrived within 10 minutes of your reuse request.\n` +
+            `<b>${formatCents(reuseCents)}</b> has been refunded to your wallet.`,
+          );
+
+          console.log(`[reconcile] STR reuse expire refund ${entry.id} — ${formatCents(reuseCents)}`);
+        } catch (e) {
+          console.error(`[reconcile] STR reuse refund error ${entry.id}:`, e instanceof Error ? e.message : e);
+        }
+      }
+    } catch (e) {
+      console.error('[reconcile] reuse-expire sweep error:', e instanceof Error ? e.message : e);
     }
   }
 
