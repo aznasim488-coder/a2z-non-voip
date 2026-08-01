@@ -26,8 +26,8 @@ const SWEEP_MS         = 90_000;       // crash-recovery interval
 const STALE_MS         = 90_000;       // stale order threshold
 const EXPIRE_SWEEP_MS  = 5 * 60_000;  // B: initial purchase expiry sweep
 const REUSE_SWEEP_MS   = 2 * 60_000;  // C: reuse expiry sweep (faster — 10-min window)
-const STR_EXPIRE_MIN   = 25;          // refund STR initial purchase after 25 min
-const REUSE_EXPIRE_MIN = 10;          // STR reuse window is 10 min
+const STR_EXPIRE_MIN   = 21;          // PVADeals STR window = 20 min; refund after 21 min
+const REUSE_EXPIRE_MIN = 10;          // STR reuse window = 10 min
 
 export class ReconcileSweep {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -280,12 +280,19 @@ export class ReconcileSweep {
           .maybeSingle();
         if (existing) continue;
 
-        // Check if a new SMS arrived AFTER this reuse request
+        // Check if a new SMS arrived WITHIN this specific reuse's 10-min window.
+        // IMPORTANT: bound the upper time to created_at + 10 min so that OTPs
+        // from a *later* reuse request don't block refund of this earlier one.
+        const reuseExpiry = new Date(
+          new Date(entry.created_at).getTime() + REUSE_EXPIRE_MIN * 60_000,
+        ).toISOString();
+
         const { data: sms } = await this.db
           .from('sms_messages')
           .select('id')
           .eq('order_id', entry.order_id)
-          .gt('received_at', entry.created_at)
+          .gt('received_at', entry.created_at)   // after this reuse request
+          .lt('received_at', reuseExpiry)         // within its 10-min window only
           .limit(1)
           .maybeSingle();
 
