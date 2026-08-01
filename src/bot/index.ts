@@ -22,7 +22,7 @@ import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
 import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
-import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, handleBkashApprove, handleBkashReject, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX } from './customer/wallet.js';
+import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, handleBkashApprove, handleBkashReject, handleNagadEnter, handleNagadTrxReply, handleNagadAmountReply, handleNagadApprove, handleNagadReject, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX, NAGAD_TRXID_MARKER, NAGAD_AMOUNT_PREFIX } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
 import {
   handleReusePrompt,
@@ -206,6 +206,19 @@ export function createBot(
         const trxId = parts[2] ?? '';
         return handleBkashReject(ctx, tid, trxId);
       }
+      case 'NAGAD_ENTER':
+        return handleNagadEnter(ctx);
+      case 'NG_APR': {
+        const tid   = parseInt(parts[1] ?? '0');
+        const trxId = parts[2] ?? '';
+        const cents = parseInt(parts[3] ?? '0');
+        return handleNagadApprove(ctx, tid, trxId, cents);
+      }
+      case 'NG_REJ': {
+        const tid   = parseInt(parts[1] ?? '0');
+        const trxId = parts[2] ?? '';
+        return handleNagadReject(ctx, tid, trxId);
+      }
       case 'LOG_MENU':
         return handleLogsMenu(ctx);
       case 'LOG_SMS':
@@ -263,6 +276,18 @@ export function createBot(
       const markerStart = replyTo.indexOf(BKASH_AMOUNT_PREFIX) + BKASH_AMOUNT_PREFIX.length;
       const trxId       = replyTo.slice(markerStart).split('\n')[0]?.trim() ?? '';
       return handleBkashAmountReply(ctx, text, trxId);
+    }
+
+    // Nagad step 2: Transaction ID
+    if (replyTo.includes(NAGAD_TRXID_MARKER)) {
+      return handleNagadTrxReply(ctx, text);
+    }
+
+    // Nagad step 3: TK amount
+    if (replyTo.includes(NAGAD_AMOUNT_PREFIX)) {
+      const markerStart = replyTo.indexOf(NAGAD_AMOUNT_PREFIX) + NAGAD_AMOUNT_PREFIX.length;
+      const trxId       = replyTo.slice(markerStart).split('\n')[0]?.trim() ?? '';
+      return handleNagadAmountReply(ctx, text, trxId);
     }
 
     await handleServiceSearch(ctx, text);

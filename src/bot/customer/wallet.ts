@@ -7,7 +7,7 @@ import { InlineKeyboard } from 'grammy';
 import { createInvoice, MIN_TOPUP_CENTS } from '../../payments/nowpayments.js';
 import { verifyPayment } from '../../payments/binancepay.js';
 import { tkToCents } from '../../payments/bkash.js';
-import { binancePayEnabled, nowPaymentsEnabled, bkashEnabled } from '../../config/env.js';
+import { binancePayEnabled, nowPaymentsEnabled } from '../../config/env.js';
 import { SUPPORT_URL } from '../ui/keyboards.js';
 
 // ─── Markers (used to detect ForceReply replies) ────────────────────────────────────────────
@@ -17,6 +17,38 @@ export const BINANCE_NAME_MARKER    = 'Enter your Binance display name';
 export const BINANCE_AMOUNT_PREFIX  = 'Enter the USDT amount you sent — BinanceName:';
 export const BKASH_TRXID_MARKER     = 'Paste your bKash Transaction ID';
 export const BKASH_AMOUNT_PREFIX    = 'Enter the amount in TK — BkashTrx:';
+export const NAGAD_TRXID_MARKER     = 'Paste your Nagad Transaction ID';
+export const NAGAD_AMOUNT_PREFIX    = 'Enter the amount in TK — NagadTrx:';
+
+// ─── Helper: fetch payment settings from DB ───────────────────────────────
+
+type PaySettings = {
+  bkash_number: string;
+  bkash_rate_tk: number;
+  bkash_min_tk: number;
+  bkash_enabled: boolean;
+  nagad_number: string;
+  nagad_rate_tk: number;
+  nagad_min_tk: number;
+  nagad_enabled: boolean;
+};
+
+async function getPaySettings(db: BotContext['db']): Promise<PaySettings> {
+  const { data } = await db.from('settings').select(
+    'bkash_number,bkash_rate_tk,bkash_min_tk,bkash_enabled,nagad_number,nagad_rate_tk,nagad_min_tk,nagad_enabled'
+  ).maybeSingle();
+  const d = data as any;
+  return {
+    bkash_number:   d?.bkash_number   ?? '01799424191',
+    bkash_rate_tk:  d?.bkash_rate_tk  ?? 130,
+    bkash_min_tk:   d?.bkash_min_tk   ?? 390,
+    bkash_enabled:  d?.bkash_enabled  ?? true,
+    nagad_number:   d?.nagad_number   ?? '',
+    nagad_rate_tk:  d?.nagad_rate_tk  ?? 130,
+    nagad_min_tk:   d?.nagad_min_tk   ?? 390,
+    nagad_enabled:  d?.nagad_enabled  ?? false,
+  };
+}
 
 // ─── Wallet screen ────────────────────────────────────────────────────────────
 
@@ -43,7 +75,7 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
 
   const hasNowPayments = nowPaymentsEnabled(ctx.env);
   const hasBinance     = binancePayEnabled(ctx.env);
-  const hasBkash       = bkashEnabled(ctx.env);
+  const pay            = await getPaySettings(ctx.db);
   const minUsd = (MIN_TOPUP_CENTS / 100).toFixed(2);
 
   const text =
@@ -62,19 +94,23 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
         `• Send USDT to Binance ID: <code>${ctx.env.BINANCE_ID}</code>\n` +
         `• Auto-verified within seconds\n\n`
       : '') +
-    (hasBkash
+    (pay.bkash_enabled && pay.bkash_number
       ? `💹 <b>bKash (BDT):</b>\n` +
-        `• Rate: ${ctx.env.BKASH_RATE_TK} TK = $1 USD\n` +
-        `• Min ${ctx.env.BKASH_MIN_TK} TK • Auto-verified\n\n`
+        `• Rate: ${pay.bkash_rate_tk} TK = $1 USD • Min ${pay.bkash_min_tk} TK\n\n`
       : '') +
-    (!hasNowPayments && !hasBinance && !hasBkash
+    (pay.nagad_enabled && pay.nagad_number
+      ? `💰 <b>Nagad (BDT):</b>\n` +
+        `• Rate: ${pay.nagad_rate_tk} TK = $1 USD • Min ${pay.nagad_min_tk} TK\n\n`
+      : '') +
+    (!hasNowPayments && !hasBinance && !pay.bkash_enabled && !pay.nagad_enabled
       ? `Contact admin to add funds.`
       : `Tap a button below to top up.`);
 
   const kb = new InlineKeyboard();
-  if (hasNowPayments) kb.text('💎 Crypto Top Up', cb('TOPUP_ENTER')).row();
-  if (hasBinance)     kb.text('💸 Binance Pay',   cb('BINANCE_ENTER')).row();
-  if (hasBkash)       kb.text('💹 bKash (BDT)',    cb('BKASH_ENTER')).row();
+  if (hasNowPayments)                          kb.text('💎 Crypto Top Up', cb('TOPUP_ENTER')).row();
+  if (hasBinance)                              kb.text('💸 Binance Pay',   cb('BINANCE_ENTER')).row();
+  if (pay.bkash_enabled && pay.bkash_number)   kb.text('💹 bKash',          cb('BKASH_ENTER')).row();
+  if (pay.nagad_enabled && pay.nagad_number)   kb.text('💰 Nagad',          cb('NAGAD_ENTER')).row();
   kb.url('💬 Contact Support', SUPPORT_URL).row();
   kb.text('🏠 Home', cb('HOME'));
 
@@ -386,41 +422,31 @@ export async function handleBinanceAmountReply(
 
 // ─── bKash flow (3 steps) ─────────────────────────────────────────────────────
 
-/** Step 1 — Show bKash numbers + ForceReply for Transaction ID */
+/** Step 1 — Show bKash number + ForceReply for Transaction ID */
 export async function handleBkashEnter(ctx: BotContext): Promise<void> {
-  if (!bkashEnabled(ctx.env)) {
+  const pay = await getPaySettings(ctx.db);
+  if (!pay.bkash_enabled || !pay.bkash_number) {
     await ctx.reply('❌ bKash is not configured. Contact admin.');
     return;
   }
 
-  const limit = ctx.env.BKASH_LIMIT_TK;
-  const rate  = ctx.env.BKASH_RATE_TK;
-  const small = ctx.env.BKASH_NUMBER_SMALL!;
-  const large = ctx.env.BKASH_NUMBER_LARGE!;
-  const minTk = ctx.env.BKASH_MIN_TK;
-
   await ctx.reply(
     `💹 <b>bKash — BDT Payment</b>\n` +
     `━━━━━━━━━━━━━━━\n\n` +
-    `⭕️ <b>Dollar Rate = ${rate} TK</b>\n\n` +
-    `🟢 <b>${minTk}–${limit - 1} TK</b> → Send Money এখানে:\n` +
-    `<code>${small}</code>\n\n` +
-    `🟢 <b>${limit}+ TK</b> → Send Money এখানে:\n` +
-    `<code>${large}</code>\n\n` +
+    `⭕️ <b>Dollar Rate = ${pay.bkash_rate_tk} TK</b>\n\n` +
+    `🟢 <b>Send Money এখানে:</b>\n` +
+    `<code>${pay.bkash_number}</code>\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `📌 <b>Steps:</b>\n` +
-    `1️⃣ উপরের নম্বরে Send Money করুন\n` +
+    `1️⃣ এই নম্বরে Send Money করুন\n` +
     `2️⃣ Transaction ID এখানে paste করুন\n` +
     `3️⃣ Amount (TK) submit করুন\n\n` +
     `⏱ Admin verify করার পর wallet এ যোগ হবে\n\n` +
     `👇 <b>${BKASH_TRXID_MARKER}:</b>`,
     {
       parse_mode: 'HTML',
-      reply_markup: {
-        force_reply: true,
-        selective: true,
-        input_field_placeholder: 'Transaction ID e.g. ABC1234XYZ',
-      },
+      reply_markup: { force_reply: true, selective: true,
+        input_field_placeholder: 'Transaction ID e.g. ABC1234XYZ' },
     },
   );
 }
@@ -454,17 +480,18 @@ export async function handleBkashAmountReply(
   input: string,
   trxId: string,
 ): Promise<void> {
-  if (!bkashEnabled(ctx.env)) {
+  const pay = await getPaySettings(ctx.db);
+  if (!pay.bkash_enabled || !pay.bkash_number) {
     await ctx.reply('❌ bKash is not configured. Contact admin.');
     return;
   }
 
   const amountTk = parseFloat(input.trim().replace(',', '.'));
-  const minTk    = ctx.env.BKASH_MIN_TK;
-  const rateTk   = ctx.env.BKASH_RATE_TK;
+  const minTk    = pay.bkash_min_tk;
+  const rateTk   = pay.bkash_rate_tk;
 
   if (isNaN(amountTk) || amountTk <= 0) {
-    await ctx.reply(`❌ Invalid amount. Enter a number like <code>250</code>.`, { parse_mode: 'HTML' });
+    await ctx.reply(`❌ Invalid amount. Enter a number like <code>390</code>.`, { parse_mode: 'HTML' });
     return;
   }
   if (amountTk < minTk) {
@@ -651,4 +678,97 @@ export async function handleBkashReject(
   ).catch(() => undefined);
 
   console.log(`[bkash] rejected trx=${trxId} user=${userTelegramId}`);
+}
+
+// --- Nagad flow (3 steps) ---
+
+export async function handleNagadEnter(ctx: BotContext): Promise<void> {
+  const pay = await getPaySettings(ctx.db);
+  if (!pay.nagad_enabled || !pay.nagad_number) { await ctx.reply('nagad_not_configured'); return; }
+  await ctx.reply(
+    '💰 <b>Nagad — BDT Payment</b>\n━━━━━━━━━━━━━━━\n\n' +
+    `⭕️ <b>Dollar Rate = ${pay.nagad_rate_tk} TK</b>\n\n` +
+    `🟢 <b>Send Money এখানে:</b>\n<code>${pay.nagad_number}</code>\n\n` +
+    '━━━━━━━━━━━━━━━\n\n📌 <b>Steps:</b>\n' +
+    '1️⃣ এই নম্বরে Send Money করুন\n2️⃣ Transaction ID paste করুন\n3️⃣ Amount (TK) submit করুন\n\n' +
+    `⏱ Admin verify করার পর wallet এ যোগ হবে\n\n👇 <b>${NAGAD_TRXID_MARKER}:</b>`,
+    { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: 'Transaction ID e.g. ABC1234XYZ' } },
+  );
+}
+
+export async function handleNagadTrxReply(ctx: BotContext, trxId: string): Promise<void> {
+  const cleaned = trxId.trim();
+  if (!cleaned || cleaned.length < 4) { await ctx.reply('❌ Invalid Transaction ID.'); return; }
+  await ctx.reply(
+    `✅ TrxID recorded: <code>${cleaned}</code>\n\nকত টাকা পাঠিয়েছেন লিখুন:\n<b>${NAGAD_AMOUNT_PREFIX}${cleaned}</b>`,
+    { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: 'Amount in TK e.g. 390' } },
+  );
+}
+
+export async function handleNagadAmountReply(ctx: BotContext, input: string, trxId: string): Promise<void> {
+  const pay = await getPaySettings(ctx.db);
+  if (!pay.nagad_enabled || !pay.nagad_number) { await ctx.reply('❌ Nagad is not configured.'); return; }
+  const amountTk = parseFloat(input.trim().replace(',', '.'));
+  if (isNaN(amountTk) || amountTk <= 0) { await ctx.reply('❌ Invalid amount.'); return; }
+  if (amountTk < pay.nagad_min_tk) {
+    await ctx.reply(`❌ Minimum Nagad top-up is <b>${pay.nagad_min_tk} TK</b>.`, { parse_mode: 'HTML' }); return;
+  }
+  const idempKey = `nagad_${trxId}`;
+  const { data: dup } = await ctx.db.from('ledger_entries').select('id').eq('idempotency_key', idempKey).maybeSingle();
+  if (dup) { await ctx.reply(`⚠️ এই TrxID আগেই submit করা হয়েছে। TrxID: <code>${trxId}</code>`, { parse_mode: 'HTML' }); return; }
+  const amountCents = Math.round((amountTk / pay.nagad_rate_tk) * 100);
+  const amountUsd = (amountCents / 100).toFixed(2);
+  await ctx.db.from('topups').insert({
+    user_id: ctx.user.id, amount_cents: amountCents,
+    method: 'nagad' as any, status: 'pending', external_id: trxId,
+    note: `${amountTk} TK @ ${pay.nagad_rate_tk} TK/$`,
+  } as any);
+  await ctx.reply(
+    `⏳ <b>Nagad Payment Submitted!</b>\n${HR}\nTrxID: <code>${trxId}</code>\nAmount: <b>${amountTk} TK</b> = <b>$${amountUsd}</b>\n\nAdmin verify করছেন — কয়েক মিনিটের মধ্যে wallet এ যোগ হবে।`,
+    { parse_mode: 'HTML' },
+  );
+  const uname = ctx.user.username ? `@${ctx.user.username}` : ctx.user.first_name;
+  const adminKb = new InlineKeyboard()
+    .text(`✅ Approve $${amountUsd}`, cb('NG_APR', ctx.user.telegram_id, trxId, amountCents)).row()
+    .text('❌ Reject', cb('NG_REJ', ctx.user.telegram_id, trxId));
+  for (const aid of ctx.env.ADMIN_TELEGRAM_IDS) {
+    await ctx.api.sendMessage(aid,
+      `💰 <b>Nagad Payment — Pending</b>\n${HR}\n👤 ${uname} (<code>${ctx.user.telegram_id}</code>)\n📋 TrxID: <code>${trxId}</code>\n💵 <b>${amountTk} TK</b> → <b>$${amountUsd}</b>\n\nCheck Nagad app and tap below:`,
+      { parse_mode: 'HTML', reply_markup: adminKb },
+    ).catch(() => undefined);
+  }
+  console.log(`[nagad] pending trx=${trxId} user=${ctx.user.id} ${amountTk}TK`);
+}
+
+export async function handleNagadApprove(ctx: BotContext, userTelegramId: number, trxId: string, amountCents: number): Promise<void> {
+  const idempKey = `nagad_${trxId}`;
+  const { data: dup } = await ctx.db.from('ledger_entries').select('id').eq('idempotency_key', idempKey).maybeSingle();
+  if (dup) { await ctx.editMessageText(`⚠️ Already credited. TrxID: <code>${trxId}</code>`, { parse_mode: 'HTML' }); return; }
+  const { data: userRow } = await ctx.db.from('users').select('id').eq('telegram_id', userTelegramId).maybeSingle();
+  if (!userRow) { await ctx.editMessageText(`❌ User not found: ${userTelegramId}`); return; }
+  try {
+    await creditWallet(ctx.db, { userId: (userRow as any).id, amountCents, kind: 'topup', idempotencyKey: idempKey, note: `Nagad approved — TrxID: ${trxId}` });
+    await (ctx.db.from('topups') as any).update({ status: 'confirmed' }).eq('external_id', trxId);
+    const amountUsd = (amountCents / 100).toFixed(2);
+    await ctx.editMessageText(`✅ <b>Nagad Approved & Credited</b>\nTrxID: <code>${trxId}</code> → $${amountUsd} → user ${userTelegramId}`, { parse_mode: 'HTML' });
+    const { data: bal } = await ctx.db.from('users').select('balance_cents').eq('telegram_id', userTelegramId).maybeSingle();
+    const newBal = formatCents((bal as any)?.balance_cents ?? amountCents);
+    const userKb = new InlineKeyboard().text('💳 Wallet', cb('TOPUP')).text('📲 Buy', cb('SVC_LIST', 1)).row().text('🏠 Home', cb('HOME'));
+    await ctx.api.sendMessage(userTelegramId,
+      `✅ <b>Nagad Payment Approved!</b>\n${HR}\nTrxID: <code>${trxId}</code>\n💵 Credited: <b>$${amountUsd}</b>\n💳 Balance: <b>${newBal}</b>\n\nআপনার wallet এ টাকা যোগ হয়েছে! 🎉`,
+      { parse_mode: 'HTML', reply_markup: userKb },
+    );
+    console.log(`[nagad] approved trx=${trxId} user=${userTelegramId} $${amountUsd}`);
+  } catch (e) { console.error('[nagad] approve failed:', e); await ctx.editMessageText(`❌ Credit failed. TrxID: ${trxId}.`); }
+}
+
+export async function handleNagadReject(ctx: BotContext, userTelegramId: number, trxId: string): Promise<void> {
+  await (ctx.db.from('topups') as any).update({ status: 'failed' }).eq('external_id', trxId);
+  await ctx.editMessageText(`❌ <b>Nagad Rejected</b>\nTrxID: <code>${trxId}</code> — user ${userTelegramId} notified.`, { parse_mode: 'HTML' });
+  const userKb = new InlineKeyboard().url('💬 Contact Support', SUPPORT_URL).row().text('🏠 Home', cb('HOME'));
+  await ctx.api.sendMessage(userTelegramId,
+    `❌ <b>Nagad Payment Rejected</b>\n${HR}\nTrxID: <code>${trxId}</code>\n\nআপনার payment verify হয়নি। সমস্যা হলে Support এ contact করুন।`,
+    { parse_mode: 'HTML', reply_markup: userKb },
+  ).catch(() => undefined);
+  console.log(`[nagad] rejected trx=${trxId} user=${userTelegramId}`);
 }
