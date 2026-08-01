@@ -1,25 +1,45 @@
 /**
- * bKash — Admin-Approval Flow
+ * bKash SMS Parser
  *
- * Personal bKash accounts (Send Money) have no public API.
- * Flow:
- *   1. User submits TrxID + TK amount
- *   2. Bot saves pending topup, DMs admin with [✅ Approve] [❌ Reject] buttons
- *   3. Admin checks their bKash app/SMS and taps a button
- *   4. Bot credits user and notifies them instantly
+ * bKash sends an SMS to the receiver when "Send Money" is received:
+ *   "Tk 250.00 received from 01XXXXXXXXX Ref ABC1234XYZ.
+ *    Your bKash ac is now Tk XXXX.XX."
  *
- * No external API calls needed.
+ * An SMS-forwarding app on the bKash SIM phone
+ * (e.g. SMS Forwarder, SMS Gateway Hub, or any similar app)
+ * POSTs the SMS text to our webhook endpoint.
+ *
+ * We parse TrxID + amount from the SMS text, match to a pending
+ * topup submitted by the user, and auto-credit the wallet.
  */
 
-export interface PendingBkashTopup {
-  id: string;           // UUID in DB
-  userId: string;       // internal user UUID
-  telegramId: number;
-  firstName: string;
+export interface ParsedBkashSms {
   trxId: string;
   amountTk: number;
-  amountCents: number;  // converted at rateTk
-  rateTk: number;
+}
+
+/**
+ * Parse a bKash "Send Money received" SMS.
+ * Handles multiple known bKash SMS formats.
+ * Returns null if the SMS doesn't look like an incoming payment.
+ */
+export function parseBkashSms(text: string): ParsedBkashSms | null {
+  // Must contain "received" or "Cash In" to be an incoming payment
+  const lower = text.toLowerCase();
+  if (!lower.includes('received') && !lower.includes('cash in')) return null;
+
+  // Extract amount: "Tk 250.00" or "Tk250.00" or "BDT 250"
+  const amountMatch = text.match(/[Tt]k[\s]?(\d+(?:\.\d+)?)/);
+  if (!amountMatch) return null;
+  const amountTk = parseFloat(amountMatch[1]!);
+  if (isNaN(amountTk) || amountTk <= 0) return null;
+
+  // Extract TrxID: "Ref ABC1234XYZ" or "TrxID ABC1234XYZ" or "Ref. ABC1234XYZ"
+  const trxMatch = text.match(/(?:[Rr]ef\.?|[Tt]rx\s*[Ii][Dd])\s+([A-Z0-9]{6,20})/);
+  if (!trxMatch) return null;
+  const trxId = trxMatch[1]!.trim();
+
+  return { trxId, amountTk };
 }
 
 /** Convert TK → USD cents at given rate */

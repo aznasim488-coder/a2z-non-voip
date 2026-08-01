@@ -51,6 +51,7 @@ const Schema = z
     BKASH_LIMIT_TK:     z.coerce.number().default(500),   // threshold between numbers
     BKASH_RATE_TK:      z.coerce.number().default(125),   // TK per $1 USD
     BKASH_MIN_TK:       z.coerce.number().default(10),    // minimum deposit in TK
+    BKASH_SMS_SECRET:   z.string().optional(),             // webhook auth token for SMS forwarder
   })
   .superRefine((v, ctx) => {
     if (v.BOT_MODE === 'webhook') {

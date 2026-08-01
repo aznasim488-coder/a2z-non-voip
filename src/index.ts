@@ -11,6 +11,9 @@ import { CatalogSync } from './jobs/catalog-sync.js';
 import { BalanceWatch } from './jobs/balance-watch.js';
 import { ReconcileSweep } from './jobs/reconcile.js';
 import { processNowPaymentsIpn, verifyIpnSignature } from './payments/nowpayments.js';
+import { parseBkashSms, tkToCents } from './payments/bkash.js';
+import { creditWallet } from './domain/wallet.js';
+import { formatCents } from './domain/money.js';
 
 const env = loadEnv();
 const db = getDb(env);
@@ -64,6 +67,116 @@ app.post('/webhooks/nowpayments', async (req, reply) => {
   }
   return reply.send({ ok: true });
 });
+
+// bKash SMS webhook — called by Android SMS-forwarder app on the bKash SIM
+// Webhook URL: POST /webhooks/bkash-sms?secret=BKASH_SMS_SECRET
+// Body (JSON): { "text": "Tk 250.00 received from 01XX... Ref ABC123..." }
+// Compatible with: SMS Forwarder, SMS Gateway Hub, or any similar app
+app.post('/webhooks/bkash-sms', async (req, reply) => {
+  const secret = env.BKASH_SMS_SECRET;
+  // If a secret is configured, require it as a query param
+  if (secret) {
+    const qs = (req.query as Record<string, string>)?.secret;
+    if (qs !== secret) {
+      app.log.warn('[bkash-sms] invalid secret');
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+  }
+
+  // Accept both: { text: '...' } and { message: '...' } and { body: '...' }
+  const body = req.body as Record<string, unknown>;
+  const smsText = (
+    (body?.text ?? body?.message ?? body?.body ?? body?.sms ?? '') as string
+  ).trim();
+
+  app.log.info({ smsText }, '[bkash-sms] received');
+
+  const parsed = parseBkashSms(smsText);
+  if (!parsed) {
+    app.log.info('[bkash-sms] not a payment SMS — ignored');
+    return reply.send({ ok: true, action: 'ignored' });
+  }
+
+  const { trxId, amountTk } = parsed;
+  app.log.info({ trxId, amountTk }, '[bkash-sms] parsed payment');
+
+  // Find pending topup with this TrxID
+  const { data: topup } = await db
+    .from('topups')
+    .select('id, user_id, amount_cents, note')
+    .eq('external_id', trxId)
+    .eq('method', 'bkash')
+    .eq('status', 'pending')
+    .maybeSingle();
+
+  if (!topup) {
+    app.log.warn({ trxId }, '[bkash-sms] no pending topup found for TrxID');
+    return reply.send({ ok: true, action: 'no_match' });
+  }
+
+  const rateTk       = env.BKASH_RATE_TK;
+  const amountCents  = tkToCents(amountTk, rateTk);
+  const idempotKey   = `bkash_${trxId}`;
+
+  // Idempotency: skip if already credited
+  const { data: existing } = await db
+    .from('ledger_entries')
+    .select('id')
+    .eq('idempotency_key', idempotKey)
+    .maybeSingle();
+
+  if (existing) {
+    app.log.info({ trxId }, '[bkash-sms] already credited — skipping');
+    return reply.send({ ok: true, action: 'already_credited' });
+  }
+
+  try {
+    const t = topup as any;
+    // Credit wallet
+    await creditWallet(db, {
+      userId:         t.user_id as string,
+      amountCents,
+      kind:           'topup',
+      idempotencyKey: idempotKey,
+      note:           `bKash auto TrxID: ${trxId} — ${amountTk} TK`,
+    });
+
+    // Update topup record
+    await (db.from('topups') as any)
+      .update({ status: 'confirmed', amount_cents: amountCents })
+      .eq('id', t.id);
+
+    // Get user telegram_id to notify
+    const { data: userRow } = await db
+      .from('users')
+      .select('telegram_id, balance_cents')
+      .eq('id', t.user_id as string)
+      .maybeSingle();
+
+    if (userRow) {
+      const ur = userRow as any;
+      const newBal = formatCents(ur.balance_cents as number);
+      const amountUsd = (amountCents / 100).toFixed(2);
+      await bot.api.sendMessage(
+        ur.telegram_id as number,
+        `✅ <b>bKash Payment Verified! (Auto)</b>\n` +
+        `━━━━━━━━━━━━━━━\n` +
+        `📋 TrxID: <code>${trxId}</code>\n` +
+        `💵 ${amountTk} TK = <b>$${amountUsd}</b> credited\n` +
+        `💳 New balance: <b>${newBal}</b>\n\n` +
+        `আপনার wallet এ টাকা যোগ হয়েছে! 🎉`,
+        { parse_mode: 'HTML' },
+      ).catch(() => undefined);
+    }
+
+    app.log.info({ trxId, amountTk, amountCents }, '[bkash-sms] ✅ auto-credited');
+  } catch (e) {
+    app.log.error({ err: e, trxId }, '[bkash-sms] credit failed');
+  }
+
+  return reply.send({ ok: true, action: 'credited' });
+});
+
 // Telegram webhook — grammY handles updates, secret token verified
 // Route registered regardless of mode so it's ready when we switch
 app.post(
