@@ -53,7 +53,9 @@ export class BalanceWatch {
           this.floorReached = true;
           await this.db.from('settings').update({ purchases_enabled: false }).eq('id', true);
           await this.dmAdmins(
-            `🛑 <b>PURCHASES PAUSED</b>\nUpstream balance dropped to <b>${formatCents(cents)}</b> — below the floor threshold (${formatCents(s.upstream_floor_cents)}).\nPurchases are now disabled. Please top up your PVADeals account.`,
+            `🛑 <b>PURCHASES PAUSED</b>
+Upstream balance dropped to <b>${formatCents(cents)}</b> — below the floor threshold (${formatCents(s.upstream_floor_cents)}).
+Purchases are now disabled. Please top up your admin account.`,
           );
         }
       } else {
@@ -68,7 +70,9 @@ export class BalanceWatch {
         if (cents < s.upstream_warn_cents && !this.warnSent) {
           this.warnSent = true;
           await this.dmAdmins(
-            `⚠️ <b>Low upstream balance</b>\nBalance is <b>${formatCents(cents)}</b> — below warn threshold (${formatCents(s.upstream_warn_cents)}).\nPlease top up your PVADeals account.`,
+            `⚠️ <b>Low upstream balance</b>
+Balance is <b>${formatCents(cents)}</b> — below warn threshold (${formatCents(s.upstream_warn_cents)}).
+Please top up your admin account.`,
           );
         }
         if (cents >= s.upstream_warn_cents) this.warnSent = false;

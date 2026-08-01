@@ -91,7 +91,7 @@ export async function handleCryptoTopup(ctx: BotContext, amountUsd: number): Pro
     const invoice = await createInvoice(token, {
       asset,
       amount: amountStr,
-      description: `Top up PVADeals wallet — $${amountStr} USDT`,
+      description: `A2Z Non-VoIP wallet top-up — $${amountStr} USDT`,
       payload,
     });
 
