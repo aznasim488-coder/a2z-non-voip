@@ -283,11 +283,17 @@ export async function handleRenewExecute(ctx: BotContext, requestId: string): Pr
   // 2. Call upstream renew
   try {
     await ctx.pva.renewLtr(requestId);
+
+    // Mark as renewed — prevents auto-refund if it expires without a new OTP
+    // @ts-ignore
+    await ctx.db.from('orders').update({ is_renewed: true }).eq('request_id', requestId);
+
     await ctx.editMessageText(
       `✅ <b>Renewal Confirmed!</b>\n${HR}\n` +
       `Charged: <b>${formatCents(sellCents)}</b>\n` +
       `Your number expiry will be updated shortly.\n\n` +
-      `<i>The updated number will appear in My Numbers after confirmation.</i>`,
+      `⚠️ <i>Note: this renewal is non-refundable even if no OTP arrives.</i>\n` +
+      `<i>The updated expiry will appear in My Numbers after confirmation.</i>`,
       { parse_mode: 'HTML' },
     ).catch(() => ctx.reply(`✅ Renewal confirmed. Cost: ${formatCents(sellCents)}.`));
   } catch {

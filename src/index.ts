@@ -93,14 +93,15 @@ app.post(
       if (event.event === 'sms_received' && event.requestId && event.message) {
         const { data: order } = await db
           .from('orders')
-          .select('id, user_id, profiles!inner(telegram_id)')
+          .select('id, user_id, type, profiles!inner(telegram_id)')
           .eq('request_id', event.requestId)
           .single();
 
         if (order) {
-          const orderId = (order as any).id as string;
-          const userId  = (order as any).user_id as string;
-          const tid     = (order as any).profiles.telegram_id as number;
+          const orderId  = (order as any).id as string;
+          const userId   = (order as any).user_id as string;
+          const tid      = (order as any).profiles.telegram_id as number;
+          const orderType = (order as any).type as string | undefined;
 
           // 1. Store SMS message
           await db.from('sms_messages').insert({
@@ -117,12 +118,22 @@ app.post(
             .update({ status: 'COMPLETED' })
             .eq('id', orderId);
 
-          // 3. Notify user
+          // 3. Notify user — STR gets a reuse cost reminder after first OTP
           const { extractOtp } = await import('./domain/pricing.js');
           const otp = extractOtp(event.message);
+
+          // Fetch reuse cost for STR tip
+          const isStr = !orderType || orderType === 'STR';
+          let reuseNote = '';
+          if (isStr) {
+            const { data: settings } = await db.from('settings').select('reuse_cost_cents').single();
+            const reuseCents = (settings as any)?.reuse_cost_cents ?? 80;
+            reuseNote = `\n\n⚠️ <i>Want another OTP? Use <b>Reuse</b> in My Numbers (costs $${(reuseCents / 100).toFixed(2)} per request).</i>`;
+          }
+
           const msgText = otp
-            ? `📨 <b>OTP Received!</b>\n🔑 Code: <code>${otp}</code>\n\n<i>${event.message}</i>`
-            : `📨 <b>SMS Received:</b>\n<i>${event.message}</i>`;
+            ? `📨 <b>OTP Received!</b>\n🔑 Code: <code>${otp}</code>\n\n<i>${event.message}</i>${reuseNote}`
+            : `📨 <b>SMS Received:</b>\n<i>${event.message}</i>${reuseNote}`;
 
           await bot.api.sendMessage(tid, msgText, { parse_mode: 'HTML' }).catch(() => undefined);
         }
@@ -157,7 +168,7 @@ async function main(): Promise<void> {
   pva.health.start();
 
   const catalogSync = new CatalogSync(db, pva);
-  const reconcile = new ReconcileSweep(db, pva);
+  const reconcile = new ReconcileSweep(db, pva, bot, env);
   const balanceWatch = new BalanceWatch(db, pva, bot, env);
 
   catalogSync.start();
