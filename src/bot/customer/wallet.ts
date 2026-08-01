@@ -6,14 +6,17 @@ import { cb } from '../ui/codec.js';
 import { InlineKeyboard } from 'grammy';
 import { createInvoice, MIN_TOPUP_CENTS } from '../../payments/nowpayments.js';
 import { verifyPayment } from '../../payments/binancepay.js';
-import { binancePayEnabled, nowPaymentsEnabled } from '../../config/env.js';
+import { verifyBkashPayment } from '../../payments/bkash.js';
+import { binancePayEnabled, nowPaymentsEnabled, bkashEnabled } from '../../config/env.js';
 import { SUPPORT_URL } from '../ui/keyboards.js';
 
-// ─── Markers (used to detect ForceReply replies) ─────────────────────────────
+// ─── Markers (used to detect ForceReply replies) ────────────────────────────────────────────
 
 export const TOPUP_PROMPT_MARKER    = 'Enter top-up amount in USD';
 export const BINANCE_NAME_MARKER    = 'Enter your Binance display name';
 export const BINANCE_AMOUNT_PREFIX  = 'Enter the USDT amount you sent — BinanceName:';
+export const BKASH_TRXID_MARKER     = 'Paste your bKash Transaction ID';
+export const BKASH_AMOUNT_PREFIX    = 'Enter the amount in TK — BkashTrx:';
 
 // ─── Wallet screen ────────────────────────────────────────────────────────────
 
@@ -40,6 +43,7 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
 
   const hasNowPayments = nowPaymentsEnabled(ctx.env);
   const hasBinance     = binancePayEnabled(ctx.env);
+  const hasBkash       = bkashEnabled(ctx.env);
   const minUsd = (MIN_TOPUP_CENTS / 100).toFixed(2);
 
   const text =
@@ -58,11 +62,19 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
         `• Send USDT to Binance ID: <code>${ctx.env.BINANCE_ID}</code>\n` +
         `• Auto-verified within seconds\n\n`
       : '') +
-    (!hasNowPayments && !hasBinance ? `Contact admin to add funds.` : `Tap a button below to top up.`);
+    (hasBkash
+      ? `💹 <b>bKash (BDT):</b>\n` +
+        `• Rate: ${ctx.env.BKASH_RATE_TK} TK = $1 USD\n` +
+        `• Min ${ctx.env.BKASH_MIN_TK} TK • Auto-verified\n\n`
+      : '') +
+    (!hasNowPayments && !hasBinance && !hasBkash
+      ? `Contact admin to add funds.`
+      : `Tap a button below to top up.`);
 
   const kb = new InlineKeyboard();
   if (hasNowPayments) kb.text('💎 Crypto Top Up', cb('TOPUP_ENTER')).row();
   if (hasBinance)     kb.text('💸 Binance Pay',   cb('BINANCE_ENTER')).row();
+  if (hasBkash)       kb.text('💹 bKash (BDT)',    cb('BKASH_ENTER')).row();
   kb.url('💬 Contact Support', SUPPORT_URL).row();
   kb.text('🏠 Home', cb('HOME'));
 
@@ -371,3 +383,188 @@ export async function handleBinanceAmountReply(
     );
   }
 }
+
+// ─── bKash flow (3 steps) ─────────────────────────────────────────────────────
+
+/** Step 1 — Show bKash numbers + ForceReply for Transaction ID */
+export async function handleBkashEnter(ctx: BotContext): Promise<void> {
+  if (!bkashEnabled(ctx.env)) {
+    await ctx.reply('❌ bKash is not configured. Contact admin.');
+    return;
+  }
+
+  const limit  = ctx.env.BKASH_LIMIT_TK;
+  const rate   = ctx.env.BKASH_RATE_TK;
+  const small  = ctx.env.BKASH_NUMBER_SMALL!;
+  const large  = ctx.env.BKASH_NUMBER_LARGE!;
+  const minTk  = ctx.env.BKASH_MIN_TK;
+
+  await ctx.reply(
+    `💹 <b>bKash — BDT Payment</b>\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `⭕️ <b>Dollar Rate = ${rate} TK</b>\n\n` +
+    `🟢 <b>${minTk}–${limit - 1} TK</b> → Send Money এখানে:\n` +
+    `<code>${small}</code>\n\n` +
+    `🟢 <b>${limit}+ TK</b> → Send Money এখানে:\n` +
+    `<code>${large}</code>\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `📌 <b>Steps:</b>\n` +
+    `1️⃣ Send Money করুন উপরের নম্বরে\n` +
+    `2️⃣ Transaction ID এখানে paste করুন\n` +
+    `3️⃣ Amount (TK) submit করুন\n\n` +
+    `⚠️ Funding Account থেকে পাঠালে সমস্যা হতে পারে\n` +
+    `✅ Bkash App → Send Money ব্যবহার করুন\n\n` +
+    `👇 <b>${BKASH_TRXID_MARKER}:</b>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: 'Transaction ID e.g. ABC1234XYZ',
+      },
+    },
+  );
+}
+
+/** Step 2 — User replied with TrxID → ask for TK amount */
+export async function handleBkashTrxReply(ctx: BotContext, trxId: string): Promise<void> {
+  const cleaned = trxId.trim();
+  if (!cleaned || cleaned.length < 4) {
+    await ctx.reply('❌ Invalid Transaction ID. Please send the full TrxID from bKash.');
+    return;
+  }
+
+  await ctx.reply(
+    `✅ TrxID recorded: <code>${cleaned}</code>\n\n` +
+    `এখন আপনি কত টাকা পাঠিয়েছেন সেটি লিখুন:\n` +
+    `<b>${BKASH_AMOUNT_PREFIX}${cleaned}</b>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: 'Amount in TK e.g. 250',
+      },
+    },
+  );
+}
+
+/** Step 3 — User replied with TK amount → verify via bKash API → credit */
+export async function handleBkashAmountReply(
+  ctx: BotContext,
+  input: string,
+  trxId: string,
+): Promise<void> {
+  if (!bkashEnabled(ctx.env)) {
+    await ctx.reply('❌ bKash is not configured. Contact admin.');
+    return;
+  }
+
+  const amountTk = parseFloat(input.trim().replace(',', '.'));
+  const minTk    = ctx.env.BKASH_MIN_TK;
+
+  if (isNaN(amountTk) || amountTk <= 0) {
+    await ctx.reply(`❌ Invalid amount. Enter a number like <code>250</code>.`, { parse_mode: 'HTML' });
+    return;
+  }
+  if (amountTk < minTk) {
+    await ctx.reply(`❌ Minimum bKash top-up is <b>${minTk} TK</b>.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  const loadingMsg = await ctx.reply('🔍 Verifying your bKash payment...').catch(() => undefined);
+
+  const config = {
+    baseUrl:     ctx.env.BKASH_BASE_URL,
+    appKey:      ctx.env.BKASH_APP_KEY!,
+    appSecret:   ctx.env.BKASH_APP_SECRET!,
+    username:    ctx.env.BKASH_USERNAME!,
+    password:    ctx.env.BKASH_PASSWORD!,
+    numberSmall: ctx.env.BKASH_NUMBER_SMALL!,
+    numberLarge: ctx.env.BKASH_NUMBER_LARGE!,
+    limitTk:     ctx.env.BKASH_LIMIT_TK,
+    rateTk:      ctx.env.BKASH_RATE_TK,
+  };
+
+  const result = await verifyBkashPayment(config, trxId, amountTk);
+
+  if (loadingMsg) {
+    await ctx.api.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => undefined);
+  }
+
+  if (!result.verified) {
+    const kb = new InlineKeyboard()
+      .url('💬 Contact Support', SUPPORT_URL).row()
+      .text('🏠 Home', cb('HOME'));
+    await ctx.reply(
+      `❌ <b>Payment not verified</b>\n${HR}\n` +
+      `TrxID: <code>${trxId}</code>\n` +
+      `Amount submitted: <b>${amountTk} TK</b>\n\n` +
+      `<b>Reason:</b> ${result.reason}\n\n` +
+      `ভুল হলে আবার bKash বাটন ক্লিক করে রি-সাবমিট করুন।`,
+      { parse_mode: 'HTML', reply_markup: kb },
+    );
+    return;
+  }
+
+  // Idempotency — prevent double-credit
+  const idempotencyKey = `bkash_${trxId}`;
+  const { data: existing } = await ctx.db
+    .from('ledger_entries')
+    .select('id')
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle();
+
+  if (existing) {
+    await ctx.reply(
+      `⚠️ এই TrxID আগেই credit করা হয়েছে।\nTrxID: <code>${trxId}</code>`,
+      { parse_mode: 'HTML' },
+    );
+    return;
+  }
+
+  const amountCents = Math.round((result.amountUsd ?? 0) * 100);
+
+  try {
+    await creditWallet(ctx.db, {
+      userId: ctx.user.id,
+      amountCents,
+      kind: 'topup',
+      idempotencyKey,
+      note: `bKash TrxID: ${trxId} — ${result.amountTk} TK`,
+    });
+
+    await ctx.db.from('topups').insert({
+      user_id:      ctx.user.id,
+      amount_cents: amountCents,
+      method:       'bkash' as any,
+      status:       'confirmed',
+      external_id:  trxId,
+      note:         `${result.amountTk} TK @ ${config.rateTk} TK/$`,
+    } as any);
+
+    const newBalance = await getBalanceCents(ctx.db, ctx.user.telegram_id);
+    const kb = new InlineKeyboard()
+      .text('💳 Wallet', cb('TOPUP'))
+      .text('📲 Buy Number', cb('SVC_LIST', 1)).row()
+      .text('🏠 Home', cb('HOME'));
+
+    await ctx.reply(
+      `✅ <b>bKash Payment Verified!</b>\n${HR}\n` +
+      `💹 Amount: <b>${result.amountTk} TK</b>\n` +
+      `💵 Credited: <b>$${((result.amountUsd ?? 0)).toFixed(2)}</b>\n` +
+      `💳 New balance: <b>${formatCents(newBalance)}</b>\n\n` +
+      `আপনার wallet এ টাকা যোগ হয়েছে! 🎉`,
+      { parse_mode: 'HTML', reply_markup: kb },
+    );
+
+    console.log(`[bkash] credited user ${ctx.user.id} ${result.amountTk}TK=$${result.amountUsd?.toFixed(2)} trx:${trxId}`);
+  } catch (e) {
+    console.error('[bkash] credit failed:', e);
+    await ctx.reply(
+      `❌ Verification ok but credit failed.\nTrxID: <code>${trxId}</code>\nContact support.`,
+      { parse_mode: 'HTML' },
+    );
+  }
+}
+

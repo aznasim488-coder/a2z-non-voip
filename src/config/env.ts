@@ -39,6 +39,18 @@ const Schema = z
     BINANCE_API_KEY:    z.string().min(4).optional(), // Personal Binance API key
     BINANCE_API_SECRET: z.string().min(4).optional(), // Personal Binance secret
     BINANCE_ID:         z.string().optional(),         // Your public Binance ID (shown to users)
+
+    // bKash Merchant API (optional — leave blank to disable)
+    BKASH_APP_KEY:      z.string().optional(),
+    BKASH_APP_SECRET:   z.string().optional(),
+    BKASH_USERNAME:     z.string().optional(),
+    BKASH_PASSWORD:     z.string().optional(),
+    BKASH_BASE_URL:     z.string().url().default('https://tokenized.pay.bka.sh/v1.2.0-beta'),
+    BKASH_NUMBER_SMALL: z.string().optional(), // bKash number for < limit TK
+    BKASH_NUMBER_LARGE: z.string().optional(), // bKash number for >= limit TK
+    BKASH_LIMIT_TK:     z.coerce.number().default(500),   // threshold between numbers
+    BKASH_RATE_TK:      z.coerce.number().default(125),   // TK per $1 USD
+    BKASH_MIN_TK:       z.coerce.number().default(10),    // minimum deposit in TK
   })
   .superRefine((v, ctx) => {
     if (v.BOT_MODE === 'webhook') {
@@ -91,3 +103,10 @@ export const nowPaymentsEnabled = (env: Env): boolean =>
 
 export const binancePayEnabled = (env: Env): boolean =>
   Boolean(env.BINANCE_API_KEY && env.BINANCE_API_SECRET && env.BINANCE_ID);
+
+export const bkashEnabled = (env: Env): boolean =>
+  Boolean(
+    env.BKASH_APP_KEY && env.BKASH_APP_SECRET &&
+    env.BKASH_USERNAME && env.BKASH_PASSWORD &&
+    env.BKASH_NUMBER_SMALL && env.BKASH_NUMBER_LARGE,
+  );

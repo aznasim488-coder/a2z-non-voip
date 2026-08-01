@@ -22,7 +22,7 @@ import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
 import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
-import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX } from './customer/wallet.js';
+import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
 import {
   handleReusePrompt,
@@ -193,6 +193,8 @@ export function createBot(
         return handleTopupEnter(ctx);
       case 'BINANCE_ENTER':
         return handleBinanceEnter(ctx);
+      case 'BKASH_ENTER':
+        return handleBkashEnter(ctx);
       case 'LOG_MENU':
         return handleLogsMenu(ctx);
       case 'LOG_SMS':
@@ -223,23 +225,33 @@ export function createBot(
 
     const replyTo = ctx.message.reply_to_message?.text ?? '';
 
-    // Step 1 reply: NOWPayments amount
+    // NOWPayments amount
     if (replyTo.includes(TOPUP_PROMPT_MARKER)) {
       return handleTopupCustomAmount(ctx, text);
     }
 
-    // Step 2 reply: Binance display name → ask for amount
+    // Binance step 2: display name
     if (replyTo.includes(BINANCE_NAME_MARKER)) {
       return handleBinanceNameReply(ctx, text);
     }
 
-    // Step 3 reply: Binance USDT amount → verify + credit
-    const binancePrefix = BINANCE_AMOUNT_PREFIX;
-    if (replyTo.includes(binancePrefix)) {
-      // Extract sender name encoded in the marker
-      const markerStart = replyTo.indexOf(binancePrefix) + binancePrefix.length;
+    // Binance step 3: USDT amount
+    if (replyTo.includes(BINANCE_AMOUNT_PREFIX)) {
+      const markerStart = replyTo.indexOf(BINANCE_AMOUNT_PREFIX) + BINANCE_AMOUNT_PREFIX.length;
       const senderName  = replyTo.slice(markerStart).split('\n')[0]?.trim() ?? '';
       return handleBinanceAmountReply(ctx, text, senderName);
+    }
+
+    // bKash step 2: Transaction ID
+    if (replyTo.includes(BKASH_TRXID_MARKER)) {
+      return handleBkashTrxReply(ctx, text);
+    }
+
+    // bKash step 3: TK amount
+    if (replyTo.includes(BKASH_AMOUNT_PREFIX)) {
+      const markerStart = replyTo.indexOf(BKASH_AMOUNT_PREFIX) + BKASH_AMOUNT_PREFIX.length;
+      const trxId       = replyTo.slice(markerStart).split('\n')[0]?.trim() ?? '';
+      return handleBkashAmountReply(ctx, text, trxId);
     }
 
     await handleServiceSearch(ctx, text);
