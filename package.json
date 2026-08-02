@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "PVADeals non-VoIP SMS number reseller Telegram bot",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/index.ts",
     "build": "tsc",
@@ -12,6 +14,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/cors": "^11.3.0",
     "@grammyjs/runner": "^2.0.3",
     "@supabase/supabase-js": "^2.48.1",
     "dotenv": "^16.4.7",

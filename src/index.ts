@@ -14,6 +14,9 @@ import { processNowPaymentsIpn, verifyIpnSignature } from './payments/nowpayment
 import { parseBkashSms, tkToCents } from './payments/bkash.js';
 import { creditWallet } from './domain/wallet.js';
 import { formatCents } from './domain/money.js';
+import cors from '@fastify/cors';
+import { registerApiRoutes } from './api/routes.js';
+
 
 const env = loadEnv();
 const db = getDb(env);
@@ -46,7 +49,14 @@ app.addContentTypeParser(
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
+// CORS for website frontend
+await app.register(cors, { origin: true, credentials: true });
+
+// REST API for website
+registerApiRoutes(app, db, pva, env);
+
 app.get('/health', async () => ({ ok: true, mode: env.BOT_MODE }));
+
 
 // NOWPayments IPN webhook — HMAC-SHA512 verified
 app.post('/webhooks/nowpayments', async (req, reply) => {
