@@ -1,5 +1,5 @@
 /**
- * Reconciliation sweep — three jobs:
+ * Reconciliation sweep — four jobs:
  *
  * A) CRASH RECOVERY (every 90 s)
  *    Heals orders stuck between debitWallet and updateOrderSuccess.
@@ -12,6 +12,11 @@
  * C) STR REUSE EXPIRY REFUND (every 2 min)
  *    STR reuse window is 10 min. If no new SMS arrives within 10 min of a
  *    reuse debit, refund the $0.80 charge automatically.
+ *
+ * D) SMS POLL FALLBACK (every 30 s)
+ *    Polls upstream for RESERVED orders to detect OTPs that arrived but
+ *    whose webhook was missed (e.g. app restart during all 5 retries).
+ *    When detected, updates order to COMPLETED and notifies the user.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { PvaDealsClient } from '../upstream/client.js';
@@ -26,6 +31,8 @@ const SWEEP_MS         = 90_000;       // crash-recovery interval
 const STALE_MS         = 90_000;       // stale order threshold
 const EXPIRE_SWEEP_MS  = 5 * 60_000;  // B: initial purchase expiry sweep
 const REUSE_SWEEP_MS   = 2 * 60_000;  // C: reuse expiry sweep (faster — 10-min window)
+const OTP_POLL_MS      = 30_000;      // D: SMS poll fallback (30 s)
+const OTP_POLL_MIN_AGE = 60_000;      // Don't poll orders younger than 1 min (give webhook time)
 const STR_EXPIRE_MIN   = 21;          // PVADeals STR window = 20 min; refund after 21 min
 const REUSE_EXPIRE_MIN = 11;          // STR reuse window = 10 min; +1 min buffer so PVADeals refunds first
 
@@ -33,6 +40,7 @@ export class ReconcileSweep {
   private timer: ReturnType<typeof setInterval> | null = null;
   private expireTimer: ReturnType<typeof setInterval> | null = null;
   private reuseTimer: ReturnType<typeof setInterval> | null = null;
+  private smsPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly db: SupabaseClient,
@@ -55,12 +63,18 @@ export class ReconcileSweep {
     setTimeout(() => void this.refundExpiredReuseStr(), 30_000);
     this.reuseTimer = setInterval(() => void this.refundExpiredReuseStr(), REUSE_SWEEP_MS);
     if (this.reuseTimer.unref) this.reuseTimer.unref();
+
+    // D) SMS poll fallback — catch missed webhooks (every 30 s)
+    setTimeout(() => void this.pollForMissedOtp(), 15_000);
+    this.smsPollTimer = setInterval(() => void this.pollForMissedOtp(), OTP_POLL_MS);
+    if (this.smsPollTimer.unref) this.smsPollTimer.unref();
   }
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.expireTimer) { clearInterval(this.expireTimer); this.expireTimer = null; }
     if (this.reuseTimer) { clearInterval(this.reuseTimer); this.reuseTimer = null; }
+    if (this.smsPollTimer) { clearInterval(this.smsPollTimer); this.smsPollTimer = null; }
   }
 
   // ── A: Crash recovery ──────────────────────────────────────────────────────
@@ -327,7 +341,7 @@ export class ReconcileSweep {
   }
 
   /** Send a DM to a user by their user_id (profile.id). */
-  private async dmUser(userId: string, html: string): Promise<void> {
+  private async dmUser(userId: string, html: string, replyToMsgId?: number): Promise<void> {
     if (!this.bot) return;
     try {
       const { data: profile } = await this.db
@@ -339,8 +353,132 @@ export class ReconcileSweep {
       await this.bot.api.sendMessage(
         (profile as { telegram_id: number }).telegram_id,
         html,
-        { parse_mode: 'HTML' },
+        {
+          parse_mode: 'HTML',
+          ...(replyToMsgId ? { reply_to_message_id: replyToMsgId } : {}),
+        },
       ).catch(() => undefined);
     } catch { /* ignore */ }
   }
+
+  // ── D: SMS poll fallback — catch missed webhooks ─────────────────────────────
+
+  /**
+   * Poll upstream for RESERVED orders to detect OTPs that arrived but
+   * whose webhook was missed. When upstream status is COMPLETED but our
+   * DB still says RESERVED, we know the webhook failed.
+   *
+   * Strategy:
+   *   1. Find RESERVED orders older than 1 min (give webhook time to arrive)
+   *   2. For each, call GET /v3/api/request/{id}
+   *   3. If upstream status is COMPLETED → update our DB + notify user
+   *   4. Rate-limit: max 10 upstream calls per sweep to stay well under 120/min
+   */
+  private async pollForMissedOtp(): Promise<void> {
+    try {
+      const minAge = new Date(Date.now() - OTP_POLL_MIN_AGE).toISOString();
+
+      // Get RESERVED orders with a request_id (meaning purchase succeeded)
+      const { data: reservedOrders } = await this.db
+        .from('orders')
+        .select('id,user_id,request_id,number,service_name,plan,sell_cents,purchase_msg_id')
+        .eq('status', 'RESERVED')
+        .not('request_id', 'is', null)
+        .lt('created_at', minAge)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (!reservedOrders || reservedOrders.length === 0) return;
+
+      for (const order of reservedOrders as {
+        id: string;
+        user_id: string;
+        request_id: string;
+        number: string | null;
+        service_name: string;
+        plan: string;
+        sell_cents: number;
+        purchase_msg_id: number | null;
+      }[]) {
+        try {
+          const upstream = await this.pva.getRequest(order.request_id);
+
+          if (upstream.status !== 'COMPLETED') continue;
+
+          // Check if we already have SMS for this order (webhook might have
+          // arrived between our DB query and this point)
+          const { data: existingSms } = await this.db
+            .from('sms_messages')
+            .select('id')
+            .eq('order_id', order.id)
+            .limit(1)
+            .maybeSingle();
+
+          if (existingSms) {
+            // SMS already stored — just update order status if still RESERVED
+            await this.db
+              .from('orders')
+              .update({ status: 'COMPLETED' } as any)
+              .eq('id', order.id)
+              .eq('status', 'RESERVED');
+            continue;
+          }
+
+          // Webhook was missed! Update order status.
+          await this.db
+            .from('orders')
+            .update({ status: 'COMPLETED' } as any)
+            .eq('id', order.id);
+
+          console.log(
+            `[reconcile] ⚠️ Missed webhook detected for order ${order.id} ` +
+            `(request ${order.request_id}) — upstream COMPLETED, our DB was RESERVED`,
+          );
+
+          // Store a placeholder SMS so other sweeps don't process this order
+          await this.db.from('sms_messages').insert({
+            order_id:   order.id,
+            user_id:    order.user_id,
+            request_id: order.request_id,
+            number:     order.number ?? null,
+            body:       '[OTP received — webhook missed, code retrieved by poll]',
+          } as any);
+
+          // Notify the user
+          const isStr = !order.plan || order.plan === 'STR';
+          let reuseNote = '';
+          if (isStr) {
+            const { data: settings } = await this.db.from('settings').select('reuse_cost_cents').single();
+            const reuseCents = (settings as any)?.reuse_cost_cents ?? 80;
+            reuseNote =
+              `\n\n⚠️ <i>Want another OTP? Use <b>Reuse</b> in My Numbers ` +
+              `(costs $${(reuseCents / 100).toFixed(2)} per request).</i>`;
+          }
+
+          const msgText =
+            `📨 <b>OTP Received!</b>\n` +
+            `Your number <code>${order.number ?? 'N/A'}</code> (${order.service_name}) received an SMS.\n\n` +
+            `🔑 Check <b>My Numbers → ${order.number ?? 'your number'}</b> or tap <b>Get OTP</b> to see the code.${reuseNote}`;
+
+          await this.dmUser(order.user_id, msgText, order.purchase_msg_id ?? undefined);
+
+          console.log(
+            `[reconcile] ✅ User notified about missed OTP for order ${order.id}`,
+          );
+        } catch (e) {
+          // Individual order poll failed — skip (don't block other orders)
+          // Common: upstream 404 for expired/flagged numbers
+          if (e instanceof Error && !e.message.includes('404')) {
+            console.error(
+              `[reconcile] OTP poll error for order ${order.id}:`,
+              e.message,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[reconcile] OTP poll sweep error:', e instanceof Error ? e.message : e);
+    }
+  }
+
 }

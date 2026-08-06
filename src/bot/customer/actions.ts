@@ -180,13 +180,42 @@ export async function handleFlag(ctx: BotContext, requestId: string): Promise<vo
   try {
     await ctx.pva.flagRequest(requestId);
 
+    // ── Fetch order to get refund amount ─────────────────────────────────────
+    const { data: order } = await ctx.db
+      .from('orders')
+      .select('id, sell_cents')
+      .eq('request_id', requestId)
+      .eq('user_id', ctx.user.id)
+      .maybeSingle();
+
+    // Mark CANCELLED
     await ctx.db
       .from('orders')
       .update({ status: 'CANCELLED' } as any)
       .eq('request_id', requestId)
       .eq('user_id', ctx.user.id);
 
-    await ctx.reply('🚩 Number flagged. The provider has been notified — they may issue a replacement number if eligible.');
+    // ── Auto-refund purchase price ────────────────────────────────────────────
+    let refundMsg = '';
+    if (order) {
+      const sellCents = (order as any).sell_cents as number;
+      const orderId   = (order as any).id as string;
+      await creditWallet(ctx.db, {
+        userId:         ctx.user.id,
+        amountCents:    sellCents,
+        kind:           'refund',
+        idempotencyKey: `flag_refund_${orderId}`,
+        note:           `Auto-refund: number flagged`,
+      });
+      refundMsg = `\n\n💳 <b>${formatCents(sellCents)} refunded</b> to your wallet.`;
+    }
+
+    await ctx.reply(
+      `🚩 <b>Number Flagged</b>\n` +
+      `The provider has been notified — they may issue a replacement number if eligible.` +
+      refundMsg,
+      { parse_mode: 'HTML' },
+    );
   } catch {
     await ctx.reply('❌ Could not flag number. Try again later.');
   }

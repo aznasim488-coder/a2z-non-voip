@@ -4,7 +4,7 @@ import { formatCents } from '../../domain/money.js';
 import { HR } from '../ui/format.js';
 import { cb } from '../ui/codec.js';
 import { InlineKeyboard } from 'grammy';
-import { createInvoice, MIN_TOPUP_CENTS } from '../../payments/nowpayments.js';
+import { createInvoice } from '../../payments/nowpayments.js';
 import { verifyPayment } from '../../payments/binancepay.js';
 import { tkToCents } from '../../payments/bkash.js';
 import { binancePayEnabled, nowPaymentsEnabled } from '../../config/env.js';
@@ -31,11 +31,12 @@ type PaySettings = {
   nagad_rate_tk: number;
   nagad_min_tk: number;
   nagad_enabled: boolean;
+  min_topup_cents: number;
 };
 
 async function getPaySettings(db: BotContext['db']): Promise<PaySettings> {
   const { data } = await db.from('settings').select(
-    'bkash_number,bkash_rate_tk,bkash_min_tk,bkash_enabled,nagad_number,nagad_rate_tk,nagad_min_tk,nagad_enabled'
+    'bkash_number,bkash_rate_tk,bkash_min_tk,bkash_enabled,nagad_number,nagad_rate_tk,nagad_min_tk,nagad_enabled,min_topup_cents'
   ).maybeSingle();
   const d = data as any;
   return {
@@ -47,6 +48,7 @@ async function getPaySettings(db: BotContext['db']): Promise<PaySettings> {
     nagad_rate_tk:  d?.nagad_rate_tk  ?? 130,
     nagad_min_tk:   d?.nagad_min_tk   ?? 390,
     nagad_enabled:  d?.nagad_enabled  ?? false,
+    min_topup_cents: d?.min_topup_cents ?? 300,
   };
 }
 
@@ -76,7 +78,7 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
   const hasNowPayments = nowPaymentsEnabled(ctx.env);
   const hasBinance     = binancePayEnabled(ctx.env);
   const pay            = await getPaySettings(ctx.db);
-  const minUsd = (MIN_TOPUP_CENTS / 100).toFixed(2);
+  const minUsd = (pay.min_topup_cents / 100).toFixed(2);
 
   const text =
     `💳 <b>Your Wallet</b>\n${HR}\n` +
@@ -123,7 +125,8 @@ export async function handleWallet(ctx: BotContext): Promise<void> {
 
 /** Send ForceReply prompt asking user to type their top-up amount */
 export async function handleTopupEnter(ctx: BotContext): Promise<void> {
-  const min = (MIN_TOPUP_CENTS / 100).toFixed(2);
+  const pay = await getPaySettings(ctx.db);
+  const min = (pay.min_topup_cents / 100).toFixed(2);
   await ctx.reply(
     `💎 <b>${TOPUP_PROMPT_MARKER}</b>\n${HR}\n` +
     `Minimum: <b>$${min}</b>\n` +
@@ -148,9 +151,11 @@ export async function handleTopupCustomAmount(ctx: BotContext, input: string): P
     return;
   }
 
-  const cleaned    = input.trim().replace(',', '.');
-  const amountUsd  = parseFloat(cleaned);
-  const minUsd     = MIN_TOPUP_CENTS / 100;
+  const pay       = await getPaySettings(ctx.db);
+  const cleaned   = input.trim().replace(',', '.');
+  const amountUsd = parseFloat(cleaned);
+  const minCents  = pay.min_topup_cents;
+  const minUsd    = minCents / 100;
 
   if (isNaN(amountUsd) || amountUsd <= 0) {
     await ctx.reply(

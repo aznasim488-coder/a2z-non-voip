@@ -143,6 +143,7 @@ export async function handleSetReuse(ctx: BotContext, priceStr: string): Promise
 /** /setglobal x2.00 | /setglobal +60% | /setglobal $1.30 */
 export async function handleSetGlobal(ctx: BotContext, valueStr: string): Promise<void> {
   let update: Record<string, unknown>;
+  let planUpdate: Record<string, unknown> | null = null;
   let confirmMsg: string;
 
   const v = valueStr.trim();
@@ -151,20 +152,25 @@ export async function handleSetGlobal(ctx: BotContext, valueStr: string): Promis
     const mult = parseFloat(v.slice(1));
     if (isNaN(mult) || mult <= 0) { await ctx.reply('❌ Invalid. Example: /setglobal x2.00'); return; }
     const bp = Math.round(mult * 10_000);
-    update = { global_mode: 'multiplier', global_multiplier_bp: bp, global_fixed_cents: null, global_markup_percent: null };
+    update = { global_mode: 'multiplier', global_multiplier_bp: bp, global_fixed_cents: null, global_markup_percent: null, global_markup_flat_cents: null };
+    // Also propagate to all plan defaults that are on multiplier mode
+    planUpdate = { mode: 'multiplier', multiplier_bp: bp, sell_cents: null, markup_percent: null, markup_flat_cents: null };
     confirmMsg = `cost ×${mult.toFixed(2)}`;
 
   } else if (v.startsWith('+') && v.endsWith('%')) {
     const pct = parseFloat(v.slice(1, -1));
     if (isNaN(pct) || pct < 0) { await ctx.reply('❌ Invalid. Example: /setglobal +60%'); return; }
-    update = { global_mode: 'markup', global_markup_percent: pct, global_fixed_cents: null };
+    update = { global_mode: 'markup', global_markup_percent: pct, global_fixed_cents: null, global_multiplier_bp: null, global_markup_flat_cents: null };
+    planUpdate = { mode: 'markup', markup_percent: pct, sell_cents: null, multiplier_bp: null, markup_flat_cents: null };
     confirmMsg = `cost +${pct}%`;
 
   } else if (v.startsWith('$')) {
     const dollars = parseFloat(v.slice(1));
     if (isNaN(dollars)) { await ctx.reply('❌ Invalid. Example: /setglobal $1.30'); return; }
     const cents = Math.round(dollars * 100);
-    update = { global_mode: 'fixed', global_fixed_cents: cents, global_markup_percent: null };
+    update = { global_mode: 'fixed', global_fixed_cents: cents, global_markup_percent: null, global_multiplier_bp: null, global_markup_flat_cents: null };
+    // For fixed mode, set each plan to fixed with this sell_cents
+    planUpdate = { mode: 'fixed', sell_cents: cents, multiplier_bp: null, markup_percent: null, markup_flat_cents: null };
     confirmMsg = `fixed ${formatCents(cents)}`;
 
   } else {
@@ -180,7 +186,26 @@ export async function handleSetGlobal(ctx: BotContext, valueStr: string): Promis
 
   const { error } = await ctx.db.from('settings').update(update as any).eq('id', true);
   if (error) { await ctx.reply('❌ DB error: ' + esc(error.message)); return; }
-  await ctx.reply(`✅ Global pricing → <b>${confirmMsg}</b>`, { parse_mode: 'HTML' });
+
+  // Propagate to all plan defaults except REUSE (which is always fixed at its own price)
+  if (planUpdate) {
+    await ctx.db
+      .from('plan_defaults')
+      .update(planUpdate as any)
+      .neq('plan', 'REUSE');
+  }
+
+  await ctx.reply(`✅ Global pricing → <b>${confirmMsg}</b>\n<i>Applied to all plan defaults (except REUSE).</i>`, { parse_mode: 'HTML' });
+}
+
+/** /setmintopup <amount> — set minimum top-up amount in USD */
+export async function handleSetMinTopup(ctx: BotContext, priceStr: string): Promise<void> {
+  const price = parseFloat(priceStr);
+  if (isNaN(price) || price < 0) { await ctx.reply('❌ Invalid. Example: /setmintopup 3.00'); return; }
+  const cents = Math.round(price * 100);
+  const { error } = await ctx.db.from('settings').update({ min_topup_cents: cents } as any).eq('id', true);
+  if (error) { await ctx.reply('❌ DB error: ' + esc(error.message)); return; }
+  await ctx.reply(`✅ Minimum top-up set to <b>${formatCents(cents)}</b>`, { parse_mode: 'HTML' });
 }
 
 /** /exportcsv — pipe-delimited price overrides as document. */

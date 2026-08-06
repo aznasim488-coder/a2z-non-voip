@@ -14,30 +14,34 @@ export async function handleAdminMenu(ctx: BotContext): Promise<void> {
     return;
   }
 
-  const [balRes, userRes, orderRes] = await Promise.all([
+  const [balRes, userRes, orderRes, settingsRes] = await Promise.all([
     ctx.pva.getBalance().catch(() => null),
     ctx.db.from('profiles').select('id', { count: 'exact', head: true }),
     ctx.db
       .from('orders')
       .select('id', { count: 'exact', head: true })
       .gte('created_at', new Date(Date.now() - 86_400_000).toISOString()),
+    ctx.db.from('settings').select('min_topup_cents').single(),
   ]);
 
   const upstreamBal = balRes ? formatCents(balRes.cents) : 'unknown';
   const userCount = userRes.count ?? '?';
   const ordersToday = orderRes.count ?? '?';
+  const minTopup = formatCents((settingsRes.data as any)?.min_topup_cents ?? 300);
 
   const text =
     `🛠 <b>Admin Panel</b>\n${HR}\n` +
     `Upstream balance: <b>${upstreamBal}</b>\n` +
     `Total users: <b>${userCount}</b>\n` +
     `Orders today: <b>${ordersToday}</b>\n` +
+    `Min top-up: <b>${minTopup}</b>\n` +
     `Breaker: <b>${ctx.pva.breaker.state}</b>\n` +
     `Upstream health: <b>${ctx.pva.health.healthy ? '✅ OK' : '❌ DOWN'}</b>\n\n` +
     `<b>Commands:</b>\n` +
     `/setplan STR 0.18 — set plan flat price\n` +
     `/setreuse 0.80 — set reuse price\n` +
     `/setglobal x2.00 — set global multiplier\n` +
+    `/setmintopup 3.00 — set min top-up\n` +
     `/credit 123456789 5.00 reason — add credit\n` +
     `/ban 123456789 | /unban 123456789\n` +
     `/exportcsv — download price CSV\n` +

@@ -37,7 +37,7 @@ import {
 
 // Admin handlers
 import { handleAdminMenu, handleAdminStatus, handleBroadcast } from './admin/index.js';
-import { handleAdminPricing, handleSetPlan, handleSetReuse, handleSetGlobal, handleExportCsv } from './admin/pricing.js';
+import { handleAdminPricing, handleSetPlan, handleSetReuse, handleSetGlobal, handleSetMinTopup, handleExportCsv } from './admin/pricing.js';
 import { handleAdminUsers, handleAdminCredit, handleAdminBan } from './admin/users.js';
 
 import type { PlanCode } from '../domain/pricing.js';
@@ -88,6 +88,11 @@ export function createBot(
   bot.command('setglobal', async (ctx) => {
     if (!isAdmin(env, ctx.user?.telegram_id)) return;
     await handleSetGlobal(ctx, ctx.match ?? '');
+  });
+
+  bot.command('setmintopup', async (ctx) => {
+    if (!isAdmin(env, ctx.user?.telegram_id)) return;
+    await handleSetMinTopup(ctx, ctx.match ?? '');
   });
 
   bot.command('credit', async (ctx) => {
