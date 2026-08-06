@@ -87,7 +87,7 @@ export function numberActionsKb(
   if (opts.canReuse) kb.text('🔄 Get OTP', cb('ACT_REUSE', requestId)).row();
 
   // Flag (only before OTP received)
-  if (opts.canFlag) kb.text('🚩 Flag Number', cb('ACT_FLAG', requestId)).row();
+  if (opts.canFlag) kb.text('🚩 Refund Number', cb('ACT_FLAG', requestId)).row();
 
   // LTR-specific options
   if (opts.canRenew || opts.canChangeDur) {

@@ -189,9 +189,9 @@ export async function handleFlag(ctx: BotContext, requestId: string): Promise<vo
 
   if (!req.allowFlag) {
     await ctx.reply(
-      '🚫 <b>Cannot flag this number.</b>\n\n' +
-      'Flagging is only allowed <b>before</b> an OTP is received.\n' +
-      'Once you have received a verification code, the number cannot be flagged.',
+      '🚫 <b>Cannot refund this number.</b>\n\n' +
+      'Refunding is only allowed <b>before</b> an OTP is received.\n' +
+      'Once you have received a verification code, the number cannot be refunded.',
       { parse_mode: 'HTML' },
     );
     return;
@@ -231,13 +231,13 @@ export async function handleFlag(ctx: BotContext, requestId: string): Promise<vo
     }
 
     await ctx.reply(
-      `🚩 <b>Number Flagged</b>\n` +
-      `The provider has been notified — they may issue a replacement number if eligible.` +
+      `🚩 <b>Number Refunded</b>\n` +
+      `The provider has been notified and the number has been cancelled.` +
       refundMsg,
       { parse_mode: 'HTML' },
     );
   } catch {
-    await ctx.reply('❌ Could not flag number. Try again later.');
+    await ctx.reply('❌ Could not refund number. Try again later.');
   }
 }
 
