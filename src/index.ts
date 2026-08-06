@@ -202,20 +202,17 @@ app.post(
 app.post(
   `/webhooks/pvadeals/${env.PVADEALS_WEBHOOK_SECRET}`,
   async (req, reply) => {
-    const event = req.body as {
-      event?: string;
-      requestId?: string;
-      oldRequestId?: string;
-      serviceId?: string;
-      number?: string;
-      message?: string;
-      newExpiresAt?: string;
-    };
+    const event = req.body as any; // Cast to any to log it fully
 
-    app.log.info({ event: event.event, requestId: event.requestId }, 'pvadeals webhook received');
+    app.log.info({
+      event: event?.event,
+      requestId: event?.requestId,
+      rawBody: event,
+      headers: req.headers // Log headers to check Content-Type
+    }, 'pvadeals webhook received - debug dump');
 
     try {
-      if (event.event === 'sms_received' && event.requestId && event.message) {
+      if (event?.event === 'sms_received' && event?.requestId && event?.message) {
         app.log.info(`[pvadeals] sms_received — requestId=${event.requestId} number=${event.number ?? '?'}`);
 
         // ── 1. Look up order by request_id (primary) ────────────────────────
