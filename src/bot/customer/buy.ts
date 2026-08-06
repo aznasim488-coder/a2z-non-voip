@@ -411,6 +411,8 @@ export async function handleSetLoc(
     kb.text(' ', cb('NOOP'));
   }
   kb.row();
+  
+  kb.text('🔍 Search State', cb('SET_LOC_SRCH', plan, shortId)).row();
 
   const backCb = plan === 'ALL_SERVICES_US' ? cb('BUY_ALL_US') : cb(`BUY_${plan}`, shortId);
   kb.text('🔙 Cancel / Back', backCb);
@@ -437,5 +439,53 @@ export async function handleBuyConfirmState(
   const codes = US_STATES[stateName];
   const areaCode = codes[Math.floor(Math.random() * codes.length)];
   
-  return handleBuyConfirm(ctx, plan, shortId, areaCode);
+  // Directly purchase the number instead of returning to confirm page
+  return handleBuyExecute(ctx, plan, shortId, areaCode);
+}
+
+export const STATE_SEARCH_MARKER = 'Reply with State name';
+
+export async function handleSetLocSearchPrompt(
+  ctx: BotContext,
+  plan: PlanCode,
+  shortId: number,
+): Promise<void> {
+  await ctx.reply(
+    `🔍 <b>Search US State</b>\n\nReply to this message with the state name (e.g., Texas).\n\n<span class="tg-spoiler">[ID: ${plan}-${shortId}]</span>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: 'e.g. Texas',
+      },
+    }
+  );
+}
+
+export async function handleStateSearchReply(
+  ctx: BotContext,
+  plan: PlanCode,
+  shortId: number,
+  searchText: string
+): Promise<void> {
+  const query = searchText.trim().toLowerCase();
+  
+  const matchedState = STATE_NAMES.find(s => s.toLowerCase() === query);
+  if (!matchedState) {
+    const partialMatch = STATE_NAMES.find(s => s.toLowerCase().includes(query));
+    if (!partialMatch) {
+      await ctx.reply(`❌ Could not find a state matching "<b>${esc(query)}</b>". Please try again from the menu.`, { parse_mode: 'HTML' });
+      return;
+    }
+    // Found partial match
+    const codes = US_STATES[partialMatch];
+    const areaCode = codes[Math.floor(Math.random() * codes.length)];
+    return handleBuyExecute(ctx, plan, shortId, areaCode);
+  }
+
+  // Found exact match
+  const codes = US_STATES[matchedState];
+  const areaCode = codes[Math.floor(Math.random() * codes.length)];
+  return handleBuyExecute(ctx, plan, shortId, areaCode);
 }

@@ -20,7 +20,7 @@ import { mainMenuKb } from './ui/keyboards.js';
 // Customer handlers
 import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
-import { handleBuyConfirm, handleBuyExecute, handleSetLoc, handleBuyConfirmState } from './customer/buy.js';
+import { handleBuyConfirm, handleBuyExecute, handleSetLoc, handleBuyConfirmState, handleSetLocSearchPrompt, handleStateSearchReply, STATE_SEARCH_MARKER } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
 import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, handleBkashApprove, handleBkashReject, handleNagadEnter, handleNagadTrxReply, handleNagadAmountReply, handleNagadApprove, handleNagadReject, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX, NAGAD_TRXID_MARKER, NAGAD_AMOUNT_PREFIX } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
@@ -181,6 +181,11 @@ export function createBot(
         const page = parseInt(parts[3] ?? '0');
         return handleSetLoc(ctx, plan, sid, page);
       }
+      case 'SET_LOC_SRCH': {
+        const plan = parts[1] as PlanCode;
+        const sid = parseInt(parts[2] ?? '0');
+        return handleSetLocSearchPrompt(ctx, plan, sid);
+      }
       case 'NUM_LIST':
         return handleMyNumbers(ctx, parseInt(parts[1] ?? '1'));
       case 'NUM_VIEW':
@@ -266,6 +271,14 @@ export function createBot(
     if (text.startsWith('/')) return;
 
     const replyTo = ctx.message.reply_to_message?.text ?? '';
+
+    // State search
+    if (replyTo.includes(STATE_SEARCH_MARKER) || replyTo.includes('[ID: ')) {
+      const match = replyTo.match(/\[ID: ([A-Z0-9_]+)-(\d+)\]/);
+      if (match) {
+        return handleStateSearchReply(ctx, match[1] as PlanCode, parseInt(match[2], 10), text);
+      }
+    }
 
     // NOWPayments amount
     if (replyTo.includes(TOPUP_PROMPT_MARKER)) {
