@@ -29,7 +29,7 @@ const Schema = z
 
     SUPABASE_URL: z.string().url(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
-    SUPABASE_ANON_KEY: z.string().min(20).optional().default(''),
+    SUPABASE_ANON_KEY: z.string().optional().default(''),  // Only needed for website REST API JWT auth
 
     NOWPAYMENTS_API_KEY: z.string().min(8).optional(),
     NOWPAYMENTS_IPN_SECRET: z.string().min(8).optional(),
