@@ -47,6 +47,21 @@ app.addContentTypeParser(
   },
 );
 
+// Catch-all parser for unknown content types (PVADeals webhooks may arrive
+// without a Content-Type header or with a non-standard one like text/html)
+app.addContentTypeParser(
+  /^(?!application\/json|text\/plain).*/,
+  { parseAs: 'buffer' },
+  (_req, body: Buffer, done) => {
+    try {
+      done(null, JSON.parse(body.toString('utf8')));
+    } catch {
+      // Not JSON — pass the raw string
+      done(null, { raw: body.toString('utf8') });
+    }
+  },
+);
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // CORS for website frontend
