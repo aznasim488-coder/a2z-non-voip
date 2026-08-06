@@ -34,29 +34,16 @@ const app = Fastify({
   trustProxy: true,
 });
 
-// Raw body — signature verification for Telegram webhook + NOWPayments IPN
+// Universal body parser — accept ANY Content-Type (including missing headers).
+// PVADeals webhooks arrive without standard Content-Type; we must not reject them.
+app.removeAllContentTypeParsers();
 app.addContentTypeParser(
-  ['application/json', 'text/plain'],
-  { parseAs: 'buffer' },
-  (_req, body: Buffer, done) => {
-    try {
-      done(null, JSON.parse(body.toString('utf8')));
-    } catch (e) {
-      done(e as Error, undefined);
-    }
-  },
-);
-
-// Catch-all parser for unknown content types (PVADeals webhooks may arrive
-// without a Content-Type header or with a non-standard one like text/html)
-app.addContentTypeParser(
-  /^(?!application\/json|text\/plain).*/,
+  '*',
   { parseAs: 'buffer' },
   (_req, body: Buffer, done) => {
     try {
       done(null, JSON.parse(body.toString('utf8')));
     } catch {
-      // Not JSON — pass the raw string
       done(null, { raw: body.toString('utf8') });
     }
   },
