@@ -214,58 +214,80 @@ app.post(
 
     try {
       if (event.event === 'sms_received' && event.requestId && event.message) {
-        const { data: order } = await db
-          .from('orders')
-          .select('id, user_id, plan, purchase_msg_id, profiles!inner(telegram_id)')
-          .eq('request_id', event.requestId)
-          .single();
+        app.log.info({ requestId: event.requestId }, '[pvadeals] sms_received — looking up order');
 
-        if (order) {
+        // ── 1. Look up order (maybeSingle so it never throws) ────────────────
+        const { data: order, error: orderErr } = await db
+          .from('orders')
+          .select('id, user_id, plan, purchase_msg_id')
+          .eq('request_id', event.requestId)
+          .maybeSingle();
+
+        if (orderErr) {
+          app.log.error({ err: orderErr, requestId: event.requestId }, '[pvadeals] DB error looking up order');
+        }
+
+        if (!order) {
+          app.log.warn({ requestId: event.requestId }, '[pvadeals] ⚠️ No order found for requestId — OTP NOT delivered. Check that request_id is stored correctly after purchase.');
+        } else {
           const orderId       = (order as any).id as string;
           const userId        = (order as any).user_id as string;
-          const tid           = (order as any).profiles.telegram_id as number;
           const orderPlan     = (order as any).plan as string | undefined;
           const purchaseMsgId = (order as any).purchase_msg_id as number | null | undefined;
 
-          // 1. Store SMS message
-          await db.from('sms_messages').insert({
-            order_id:   orderId,
-            user_id:    userId,
-            request_id: event.requestId,
-            number:     event.number ?? null,
-            body:       event.message,
-          } as any);
+          // ── 2. Look up telegram_id from profiles (separate query — avoids join issues) ──
+          const { data: profile } = await db
+            .from('profiles')
+            .select('telegram_id')
+            .eq('id', userId)
+            .maybeSingle();
 
-          // 2. Mark order COMPLETED (OTP arrived)
-          await db.from('orders')
-            // @ts-ignore
-            .update({ status: 'COMPLETED' })
-            .eq('id', orderId);
+          if (!profile) {
+            app.log.warn({ userId, orderId }, '[pvadeals] ⚠️ No profile found for user — cannot notify');
+          } else {
+            const tid = (profile as any).telegram_id as number;
 
-          // 3. Notify user — STR gets a reuse cost reminder after first OTP
-          const { extractOtp } = await import('./domain/pricing.js');
-          const otp = extractOtp(event.message);
+            // ── 3. Store SMS message ─────────────────────────────────────────
+            await db.from('sms_messages').insert({
+              order_id:   orderId,
+              user_id:    userId,
+              request_id: event.requestId,
+              number:     event.number ?? null,
+              body:       event.message,
+            } as any);
 
-          // Fetch reuse cost for STR tip
-          const isStr = !orderPlan || orderPlan === 'STR';
-          let reuseNote = '';
-          if (isStr) {
-            const { data: settings } = await db.from('settings').select('reuse_cost_cents').single();
-            const reuseCents = (settings as any)?.reuse_cost_cents ?? 80;
-            reuseNote = `\n\n⚠️ <i>Want another OTP? Use <b>Reuse</b> in My Numbers (costs $${(reuseCents / 100).toFixed(2)} per request).</i>`;
+            // ── 4. Mark order COMPLETED ──────────────────────────────────────
+            await db.from('orders')
+              // @ts-ignore
+              .update({ status: 'COMPLETED' })
+              .eq('id', orderId);
+
+            // ── 5. Build notification message ────────────────────────────────
+            const { extractOtp } = await import('./domain/pricing.js');
+            const otp = extractOtp(event.message);
+
+            const isStr = !orderPlan || orderPlan === 'STR';
+            let reuseNote = '';
+            if (isStr) {
+              const { data: settings } = await db.from('settings').select('reuse_cost_cents').single();
+              const reuseCents = (settings as any)?.reuse_cost_cents ?? 80;
+              reuseNote = `\n\n⚠️ <i>Want another OTP? Use <b>Reuse</b> in My Numbers (costs $${(reuseCents / 100).toFixed(2)} per request).</i>`;
+            }
+
+            const msgText = otp
+              ? `📨 <b>OTP Received!</b>\n🔑 Code: <code>${otp}</code>\n\n<i>${event.message}</i>${reuseNote}`
+              : `📨 <b>SMS Received:</b>\n<i>${event.message}</i>${reuseNote}`;
+
+            // ── 6. Send to user (reply to purchase message if saved) ─────────
+            await bot.api.sendMessage(tid, msgText, {
+              parse_mode: 'HTML',
+              ...(purchaseMsgId ? { reply_to_message_id: purchaseMsgId } : {}),
+            }).catch((err: unknown) => {
+              app.log.warn({ err, tid }, '[pvadeals] sendMessage failed (user may have blocked bot)');
+            });
+
+            app.log.info({ orderId, otp, tid }, '[pvadeals] ✅ OTP delivered to user');
           }
-
-          const msgText = otp
-            ? `📨 <b>OTP Received!</b>\n🔑 Code: <code>${otp}</code>\n\n<i>${event.message}</i>${reuseNote}`
-            : `📨 <b>SMS Received:</b>\n<i>${event.message}</i>${reuseNote}`;
-
-          // Reply to the original "Number Purchased!" message so OTP appears
-          // in-thread right below the purchase confirmation.
-          // Falls back to a plain message if purchase_msg_id wasn't saved.
-          await bot.api.sendMessage(tid, msgText, {
-            parse_mode: 'HTML',
-            ...(purchaseMsgId ? { reply_to_message_id: purchaseMsgId } : {}),
-          }).catch(() => undefined);
         }
       }
 
