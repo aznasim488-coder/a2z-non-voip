@@ -24,6 +24,11 @@ import { debitWallet, creditWallet, InsufficientFundsError, getBalanceCents } fr
 import { createOrder, updateOrderSuccess, updateOrderFailed } from '../../domain/orders.js';
 import { resolvePrice, type PlanCode } from '../../domain/pricing.js';
 import { BreakerOpenError, UpstreamDownError } from '../../upstream/client.js';
+import { US_STATES } from '../../domain/usa-states.js';
+import { InlineKeyboard } from 'grammy';
+import { cb } from '../ui/codec.js';
+
+const STATE_NAMES = Object.keys(US_STATES);
 
 // Mapping from plan code to upstream call
 type PurchasePlan =
@@ -40,9 +45,10 @@ export async function handleBuyConfirm(
   ctx: BotContext,
   plan: PlanCode,
   shortId: number,
+  areaCode?: string,
 ): Promise<void> {
   // Look up sell price
-  const { sellCents, serviceName } = await resolveSellPrice(ctx, plan, shortId);
+  const { sellCents, serviceName, country } = await resolveSellPrice(ctx, plan, shortId);
   if (sellCents === null || serviceName === null) {
     await ctx.editMessageText('❌ Service not found or no price configured.').catch(() => undefined);
     return;
@@ -65,7 +71,8 @@ export async function handleBuyConfirm(
     `🛒 <b>Confirm Purchase</b>\n${HR}\n` +
     `Service: <b>${esc(serviceName)}</b>\n` +
     `Plan: <b>${planLabel[plan]}</b>\n` +
-    `Price: <b>${fc(sellCents)}</b>\n\n` +
+    `Price: <b>${fc(sellCents)}</b>\n` +
+    (areaCode ? `Location: <b>USA Area Code ${areaCode}</b>\n\n` : '\n') +
     `Your balance: <b>${fc(balance)}</b>\n` +
     (balance < sellCents ? `\n⚠️ <b>Insufficient balance.</b> Please top up first.` : '');
 
@@ -73,13 +80,22 @@ export async function handleBuyConfirm(
     await ctx.editMessageText(text, { parse_mode: 'HTML' }).catch(() =>
       ctx.reply(text, { parse_mode: 'HTML' }),
     );
-    return;
+  }
+
+  const kb = confirmKb(plan, shortId);
+  if (areaCode) {
+    // If areaCode is supplied, replace the standard Confirm button with one that includes it
+    kb.inline_keyboard[0] = [{ text: '✅ Confirm Purchase', callback_data: cb('BUY_CFM', plan, shortId, areaCode) }];
+  }
+  
+  if (country === 'USA' || plan === 'ALL_SERVICES_US') {
+    kb.row().text('📍 Set Location (US Only)', cb('SET_LOC', plan, shortId, 0));
   }
 
   await ctx.editMessageText(text, {
     parse_mode: 'HTML',
-    reply_markup: confirmKb(plan, shortId),
-  }).catch(() => ctx.reply(text, { parse_mode: 'HTML', reply_markup: confirmKb(plan, shortId) }));
+    reply_markup: kb,
+  }).catch(() => ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb }));
 }
 
 /** Execute the purchase after customer confirmation. */
@@ -87,6 +103,7 @@ export async function handleBuyExecute(
   ctx: BotContext,
   plan: PlanCode,
   shortId: number,
+  areaCode?: string,
 ): Promise<void> {
   const idempotencyKey = ctx.callbackQuery?.id ?? '';
 
@@ -141,7 +158,7 @@ export async function handleBuyExecute(
 
   // Call upstream
   try {
-    const result = await executePurchase(ctx, plan, serviceId ?? '');
+    const result = await executePurchase(ctx, plan, serviceId ?? '', areaCode);
 
     await updateOrderSuccess(ctx.db, order.id, {
       requestId: result.requestId,
@@ -200,6 +217,7 @@ async function resolveSellPrice(
   costCents: number | null;
   serviceId: string | null;
   serviceName: string | null;
+  country: string | null;
 }> {
   // Fetch settings for global rule + min margin
   const { data: rawSettings } = await ctx.db
@@ -210,7 +228,7 @@ async function resolveSellPrice(
     )
     .single();
 
-  if (!rawSettings) return { sellCents: null, costCents: null, serviceId: null, serviceName: null };
+  if (!rawSettings) return { sellCents: null, costCents: null, serviceId: null, serviceName: null, country: null };
 
   const settings = rawSettings as unknown as {
     global_mode: 'fixed' | 'multiplier' | 'markup';
@@ -263,17 +281,18 @@ async function resolveSellPrice(
       costCents,
       serviceId: 'ALL_SERVICES',
       serviceName: plan === 'ALL_SERVICES_US' ? 'ALL_SERVICES (US)' : 'ALL_SERVICES (UK)',
+      country: plan === 'ALL_SERVICES_US' ? 'USA' : 'UK',
     };
   }
 
   // Regular service
   const { data: svc } = await ctx.db
     .from('services_cache')
-    .select('service_id,name,str_cost_cents,ltr3_cost_cents,ltr7_cost_cents,ltr14_cost_cents,ltr30_cost_cents')
+    .select('service_id,name,country,str_cost_cents,ltr3_cost_cents,ltr7_cost_cents,ltr14_cost_cents,ltr30_cost_cents')
     .eq('short_id', shortId)
     .single();
 
-  if (!svc) return { sellCents: null, costCents: null, serviceId: null, serviceName: null };
+  if (!svc) return { sellCents: null, costCents: null, serviceId: null, serviceName: null, country: null };
 
   const costMap: Record<string, number> = {
     STR: svc.str_cost_cents as number,
@@ -326,6 +345,7 @@ async function resolveSellPrice(
     costCents,
     serviceId: svc.service_id as string,
     serviceName: svc.name as string,
+    country: svc.country as string,
   };
 }
 
@@ -333,18 +353,19 @@ async function executePurchase(
   ctx: BotContext,
   plan: PlanCode,
   serviceId: string,
+  areaCode?: string,
 ): Promise<{ requestId: string; number: string; serviceName: string; status: string; endTime: string }> {
   switch (plan) {
     case 'STR':
-      return ctx.pva.purchaseStr(serviceId);
+      return ctx.pva.purchaseStr(serviceId, areaCode);
     case 'LTR3':
-      return ctx.pva.purchaseLtr(serviceId, 3);
+      return ctx.pva.purchaseLtr(serviceId, 3, areaCode);
     case 'LTR7':
-      return ctx.pva.purchaseLtr(serviceId, 7);
+      return ctx.pva.purchaseLtr(serviceId, 7, areaCode);
     case 'LTR14':
-      return ctx.pva.purchaseLtr(serviceId, 14);
+      return ctx.pva.purchaseLtr(serviceId, 14, areaCode);
     case 'LTR30':
-      return ctx.pva.purchaseLtr(serviceId, 30);
+      return ctx.pva.purchaseLtr(serviceId, 30, areaCode);
     case 'ALL_SERVICES_US':
       return ctx.pva.purchaseAllServicesUs();
     case 'ALL_SERVICES_UK':
@@ -352,4 +373,69 @@ async function executePurchase(
     default:
       throw new Error(`Unknown plan: ${plan}`);
   }
+}
+
+export async function handleSetLoc(
+  ctx: BotContext,
+  plan: PlanCode,
+  shortId: number,
+  page: number,
+): Promise<void> {
+  const PAGE_SIZE = 12; // 3 columns x 4 rows? No, just lists. We will do 2 per row.
+  const maxPage = Math.ceil(STATE_NAMES.length / PAGE_SIZE) - 1;
+  const safePage = Math.max(0, Math.min(page, maxPage));
+
+  const start = safePage * PAGE_SIZE;
+  const states = STATE_NAMES.slice(start, start + PAGE_SIZE);
+
+  const kb = new InlineKeyboard();
+
+  for (let i = 0; i < states.length; i += 2) {
+    const row = states.slice(i, i + 2);
+    for (const st of row) {
+      const sIdx = STATE_NAMES.indexOf(st);
+      kb.text(st, cb('BUY_CFM_ST', plan, shortId, sIdx));
+    }
+    kb.row();
+  }
+
+  if (safePage > 0) {
+    kb.text('◀️ Prev', cb('SET_LOC', plan, shortId, safePage - 1));
+  } else {
+    kb.text(' ', cb('NOOP'));
+  }
+  kb.text(`${safePage + 1} / ${maxPage + 1}`, cb('NOOP'));
+  if (safePage < maxPage) {
+    kb.text('Next ▶️', cb('SET_LOC', plan, shortId, safePage + 1));
+  } else {
+    kb.text(' ', cb('NOOP'));
+  }
+  kb.row();
+
+  const backCb = plan === 'ALL_SERVICES_US' ? cb('BUY_ALL_US') : cb(`BUY_${plan}`, shortId);
+  kb.text('🔙 Cancel / Back', backCb);
+
+  const text = `📍 <b>Select US State</b>\n\nChoose a state to narrow down the area code. (Optional)`;
+  
+  await ctx.editMessageText(text, {
+    parse_mode: 'HTML',
+    reply_markup: kb,
+  }).catch(() => undefined);
+}
+
+export async function handleBuyConfirmState(
+  ctx: BotContext,
+  plan: PlanCode,
+  shortId: number,
+  stateIdx: number,
+): Promise<void> {
+  const stateName = STATE_NAMES[stateIdx];
+  if (!stateName) {
+    return handleBuyConfirm(ctx, plan, shortId);
+  }
+
+  const codes = US_STATES[stateName];
+  const areaCode = codes[Math.floor(Math.random() * codes.length)];
+  
+  return handleBuyConfirm(ctx, plan, shortId, areaCode);
 }

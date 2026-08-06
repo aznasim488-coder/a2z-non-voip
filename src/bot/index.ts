@@ -20,7 +20,7 @@ import { mainMenuKb } from './ui/keyboards.js';
 // Customer handlers
 import { handleStart } from './customer/start.js';
 import { handleServiceList, handleServiceView, handleServiceDetail, handleServiceSearch } from './customer/browse.js';
-import { handleBuyConfirm, handleBuyExecute } from './customer/buy.js';
+import { handleBuyConfirm, handleBuyExecute, handleSetLoc, handleBuyConfirmState } from './customer/buy.js';
 import { handleMyNumbers, handleNumberView } from './customer/my-numbers.js';
 import { handleWallet, handleTopupEnter, handleTopupCustomAmount, handleBinanceEnter, handleBinanceNameReply, handleBinanceAmountReply, handleBkashEnter, handleBkashTrxReply, handleBkashAmountReply, handleBkashApprove, handleBkashReject, handleNagadEnter, handleNagadTrxReply, handleNagadAmountReply, handleNagadApprove, handleNagadReject, TOPUP_PROMPT_MARKER, BINANCE_NAME_MARKER, BINANCE_AMOUNT_PREFIX, BKASH_TRXID_MARKER, BKASH_AMOUNT_PREFIX, NAGAD_TRXID_MARKER, NAGAD_AMOUNT_PREFIX } from './customer/wallet.js';
 import { handleLogsMenu, handleSmsLogs, handleNumberLogs, handlePaymentLogs } from './customer/logs.js';
@@ -166,7 +166,20 @@ export function createBot(
       case 'BUY_CFM': {
         const plan = parts[1] as PlanCode;
         const sid = parseInt(parts[2] ?? '0');
-        return handleBuyExecute(ctx, plan, sid);
+        const areaCode = parts[3];
+        return handleBuyExecute(ctx, plan, sid, areaCode);
+      }
+      case 'BUY_CFM_ST': {
+        const plan = parts[1] as PlanCode;
+        const sid = parseInt(parts[2] ?? '0');
+        const stateIdx = parseInt(parts[3] ?? '0');
+        return handleBuyConfirmState(ctx, plan, sid, stateIdx);
+      }
+      case 'SET_LOC': {
+        const plan = parts[1] as PlanCode;
+        const sid = parseInt(parts[2] ?? '0');
+        const page = parseInt(parts[3] ?? '0');
+        return handleSetLoc(ctx, plan, sid, page);
       }
       case 'NUM_LIST':
         return handleMyNumbers(ctx, parseInt(parts[1] ?? '1'));
