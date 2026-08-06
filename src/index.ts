@@ -34,6 +34,12 @@ const app = Fastify({
   trustProxy: true,
 });
 
+// Debug all incoming requests
+app.addHook('onRequest', (req, reply, done) => {
+  app.log.info({ method: req.method, url: req.url }, 'Incoming request raw details');
+  done();
+});
+
 // Universal body parser — accept ANY Content-Type (including missing headers).
 // PVADeals webhooks arrive without standard Content-Type; we must not reject them.
 app.removeAllContentTypeParsers();
