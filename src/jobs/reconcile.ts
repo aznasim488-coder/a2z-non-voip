@@ -34,7 +34,7 @@ const REUSE_SWEEP_MS   = 2 * 60_000;  // C: reuse expiry sweep (faster — 10-mi
 const OTP_POLL_MS      = 30_000;      // D: SMS poll fallback (30 s)
 const OTP_POLL_MIN_AGE = 60_000;      // Don't poll orders younger than 1 min (give webhook time)
 const STR_EXPIRE_MIN   = 21;          // PVADeals STR window = 20 min; refund after 21 min
-const REUSE_EXPIRE_MIN = 11;          // STR reuse window = 10 min; +1 min buffer so PVADeals refunds first
+const REUSE_EXPIRE_MIN = 22;          // STR reuse window = 22 min; refund after 22 min
 
 export class ReconcileSweep {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -147,6 +147,7 @@ export class ReconcileSweep {
       .select('id,user_id,sell_cents,number,service_name')
       .eq('status', 'RESERVED')
       .eq('plan', 'STR')
+      .eq('reuse_count', 0)
       .lt('created_at', cutoff);
 
     if (!expiredStrs || expiredStrs.length === 0) return;
@@ -323,10 +324,18 @@ export class ReconcileSweep {
             note: 'Auto-refund: STR reuse expired (no OTP in 10 min)',
           });
 
+          // Change order status back to COMPLETED
+          if (entry.order_id) {
+            await this.db
+              .from('orders')
+              .update({ status: 'COMPLETED' } as any)
+              .eq('id', entry.order_id);
+          }
+
           await this.dmUser(
             entry.user_id,
             `🔄 <b>Reuse Refund</b>\n` +
-            `No OTP arrived within 10 minutes of your reuse request.\n` +
+            `No OTP arrived within 22 minutes of your reuse request.\n` +
             `<b>${formatCents(reuseCents)}</b> has been refunded to your wallet.`,
           );
 

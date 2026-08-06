@@ -138,6 +138,26 @@ export async function handleReuseExecute(ctx: BotContext, requestId: string): Pr
 
   try {
     await ctx.pva.reuseRequest(requestId);
+    
+    // ── STR Reuse logic: Mark RESERVED and increment reuse_count ────────────────
+    const { data: currentOrder } = await ctx.db
+      .from('orders')
+      .select('id, reuse_count')
+      .eq('request_id', requestId)
+      .eq('user_id', ctx.user.id)
+      .single();
+
+    if (currentOrder) {
+      const currentCount = (currentOrder as any).reuse_count ?? 0;
+      await ctx.db.from('orders')
+        .update({ 
+          status: 'RESERVED', 
+          updated_at: new Date().toISOString(),
+          reuse_count: currentCount + 1 
+        } as any)
+        .eq('id', (currentOrder as any).id);
+    }
+
     await ctx.editMessageText(
       `🔄 <b>OTP Request Sent!</b>\n${HR}\n` +
       `A new OTP will be sent to your number shortly.\n` +

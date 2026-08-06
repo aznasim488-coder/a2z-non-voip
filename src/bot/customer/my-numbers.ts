@@ -99,7 +99,10 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
   //   RESERVED  = no OTP yet → flag IS allowed
   //   COMPLETED = OTP arrived → flag NOT allowed
   //   EXPIRED   = past end_time → flag NOT allowed
-  let allowFlag    = isReserved && !isExpired;
+  //   REUSED    = if reuse_count > 0, it means it already got a code previously → flag NOT allowed
+  const reuseCount = (order as any).reuse_count as number ?? 0;
+  
+  let allowFlag    = isReserved && !isExpired && reuseCount === 0;
   let allowReuse   = isCompleted && !isExpired;
   // LTR-only actions (only while still active)
   let canRenew     = isLtr && !isExpired;
@@ -109,7 +112,7 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
     try {
       const req = await ctx.pva.getRequest(requestId);
       // For COMPLETED numbers, respect upstream allowFlag (usually false)
-      if (!isReserved) allowFlag = req.allowFlag && !isExpired;
+      if (!isReserved) allowFlag = req.allowFlag && !isExpired && reuseCount === 0;
       allowReuse   = req.allowReuse && !isExpired;
       canRenew     = req.numberType === 'LTR' && !isExpired;
       canChangeDur = req.numberType === 'LTR' && !isExpired;
