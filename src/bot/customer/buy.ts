@@ -167,10 +167,21 @@ export async function handleBuyExecute(
       endTime: result.endTime,
     });
 
+    let locationStr = '';
+    if (areaCode) {
+      const stateName = Object.keys(US_STATES).find(k => US_STATES[k].includes(areaCode));
+      if (stateName) {
+        locationStr = `Location: <b>${esc(stateName)}</b> (Code ${areaCode})\n`;
+      } else {
+        locationStr = `Location: <b>USA Area Code ${areaCode}</b>\n`;
+      }
+    }
+
     const sentMsg = await ctx.reply(
       `✅ <b>Number Purchased!</b>\n${HR}\n` +
       phoneBlock(result.number) + '\n' +
       `Service: <b>${esc(result.serviceName)}</b>\n` +
+      locationStr +
       expiryLine(result.endTime) + '\n\n' +
       `💳 New balance: <b>${fc(newBalance)}</b>\n\n` +
       `📨 <b>OTP will appear here automatically</b> when received.\n` +
