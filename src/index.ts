@@ -214,21 +214,52 @@ app.post(
 
     try {
       if (event.event === 'sms_received' && event.requestId && event.message) {
-        app.log.info({ requestId: event.requestId }, '[pvadeals] sms_received — looking up order');
+        app.log.info(`[pvadeals] sms_received — requestId=${event.requestId} number=${event.number ?? '?'}`);
 
-        // ── 1. Look up order (maybeSingle so it never throws) ────────────────
-        const { data: order, error: orderErr } = await db
+        // ── 1. Look up order by request_id (primary) ────────────────────────
+        let order: Record<string, unknown> | null = null;
+
+        const { data: orderByReqId, error: orderErr } = await db
           .from('orders')
           .select('id, user_id, plan, purchase_msg_id')
           .eq('request_id', event.requestId)
           .maybeSingle();
 
         if (orderErr) {
-          app.log.error({ err: orderErr, requestId: event.requestId }, '[pvadeals] DB error looking up order');
+          app.log.error(`[pvadeals] DB error looking up order for requestId=${event.requestId}: ${orderErr.message}`);
+        }
+
+        order = orderByReqId as Record<string, unknown> | null;
+
+        // ── 1b. Fallback: look up by phone number (handles race condition    
+        //    where webhook arrives before updateOrderSuccess writes request_id)
+        if (!order && event.number) {
+          const { data: orderByNumber } = await db
+            .from('orders')
+            .select('id, user_id, plan, purchase_msg_id, request_id')
+            .eq('number', event.number)
+            .in('status', ['RESERVED', 'PENDING_UPSTREAM'])
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (orderByNumber) {
+            order = orderByNumber as Record<string, unknown>;
+            app.log.info(`[pvadeals] Found order by number fallback: orderId=${(order as any).id}`);
+
+            // Also store the request_id if it was missing (race condition fix)
+            if (!(orderByNumber as any).request_id) {
+              await db.from('orders')
+                // @ts-ignore
+                .update({ request_id: event.requestId })
+                .eq('id', (orderByNumber as any).id);
+              app.log.info(`[pvadeals] Stored missing request_id=${event.requestId} on order`);
+            }
+          }
         }
 
         if (!order) {
-          app.log.warn({ requestId: event.requestId }, '[pvadeals] ⚠️ No order found for requestId — OTP NOT delivered. Check that request_id is stored correctly after purchase.');
+          app.log.warn(`[pvadeals] ⚠️ No order found for requestId=${event.requestId} number=${event.number ?? '?'} — OTP NOT delivered`);
         } else {
           const orderId       = (order as any).id as string;
           const userId        = (order as any).user_id as string;
