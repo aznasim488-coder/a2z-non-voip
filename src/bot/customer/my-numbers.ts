@@ -14,8 +14,6 @@ export async function handleMyNumbers(ctx: BotContext, page: number): Promise<vo
     .select('id,service_name,plan,number,status,end_time,request_id')
     .eq('user_id', ctx.user.id)
     .in('status', ['RESERVED', 'COMPLETED'])
-    // Hide expired LTR numbers: show RESERVED always, COMPLETED only if still active
-    .or('status.eq.RESERVED,end_time.is.null,end_time.gt.now()')
     .order('created_at', { ascending: false })
     .range(offset, offset + PAGE_SIZE);
 
