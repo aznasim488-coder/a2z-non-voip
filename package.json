@@ -1,6 +1,6 @@
 {
   "name": "pvadeals-bot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "PVADeals non-VoIP SMS number reseller Telegram bot",

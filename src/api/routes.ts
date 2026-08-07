@@ -171,7 +171,9 @@ export function registerApiRoutes(app: FastifyInstance, db: SupabaseClient, pva:
   app.post('/api/topup/crypto', async (req, reply) => {
     const u = await auth(req, reply, db, env); if (!u) return;
     const { amount_usd } = req.body as any;
-    if (!amount_usd || amount_usd < MIN_TOPUP_CENTS / 100) return reply.code(400).send({ error: 'Amount too low' });
+    const { data: paySettings } = await db.from('settings').select('min_topup_cents').maybeSingle();
+    const minTopupCents = (paySettings as any)?.min_topup_cents ?? 300;
+    if (!amount_usd || amount_usd < minTopupCents / 100) return reply.code(400).send({ error: 'Amount too low' });
     try {
       const amountCents = Math.round(amount_usd * 100);
       const ipnUrl = `${env.PVADEALS_BASE_URL?.replace('/v3', '') || 'https://your-app.up.railway.app'}/webhooks/nowpayments`;

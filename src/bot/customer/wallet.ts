@@ -232,6 +232,8 @@ export async function handleBinanceEnter(ctx: BotContext): Promise<void> {
     return;
   }
 
+  const pay = await getPaySettings(ctx.db);
+  const minUsd = (pay.min_topup_cents / 100).toFixed(2);
   const mid = ctx.env.BINANCE_ID!;
 
   await ctx.reply(
@@ -254,7 +256,7 @@ export async function handleBinanceEnter(ctx: BotContext): Promise<void> {
     `✅ USDT → Automatic recharge in seconds\n` +
     `❌ Other coins → Manual processing via admin\n\n` +
     `🤖 24/7 fully automated system\n` +
-    `💵 Minimum: <b>$3.00 USDT</b>\n\n` +
+    `💵 Minimum: <b>$${minUsd} USDT</b>\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `👇 <b>${BINANCE_NAME_MARKER}:</b>
 ` +
@@ -305,6 +307,8 @@ export async function handleBinanceAmountReply(
     return;
   }
 
+  const pay = await getPaySettings(ctx.db);
+  const minUsd = pay.min_topup_cents / 100;
   const amountUsdt = parseFloat(input.trim().replace(',', '.'));
 
   if (isNaN(amountUsdt) || amountUsdt <= 0) {
@@ -315,8 +319,8 @@ export async function handleBinanceAmountReply(
     return;
   }
 
-  if (amountUsdt < 3) {
-    await ctx.reply('❌ Minimum Binance Pay top-up is <b>$3.00 USDT</b>.', { parse_mode: 'HTML' });
+  if (amountUsdt < minUsd) {
+    await ctx.reply(`❌ Minimum Binance Pay top-up is <b>$${minUsd.toFixed(2)} USDT</b>.`, { parse_mode: 'HTML' });
     return;
   }
 
