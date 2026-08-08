@@ -53,6 +53,9 @@ const Schema = z
     BKASH_RATE_TK:      z.coerce.number().default(130),   // TK per $1 USD
     BKASH_MIN_TK:       z.coerce.number().default(390),   // minimum deposit in TK ($3)
     BKASH_SMS_SECRET:   z.string().optional(),             // webhook auth token for SMS forwarder
+
+    // IPQualityScore phone validation (optional — used for post-purchase number check)
+    IPQS_API_KEY: z.string().min(8).optional(),
   })
   .superRefine((v, ctx) => {
     if (v.BOT_MODE === 'webhook') {
@@ -102,6 +105,8 @@ export function isAdmin(env: Env, telegramId: number | undefined): boolean {
 
 export const nowPaymentsEnabled = (env: Env): boolean =>
   Boolean(env.NOWPAYMENTS_API_KEY && env.NOWPAYMENTS_IPN_SECRET);
+
+export const ipqsEnabled = (env: Env): boolean => Boolean(env.IPQS_API_KEY);
 
 export const binancePayEnabled = (env: Env): boolean =>
   Boolean(env.BINANCE_API_KEY && env.BINANCE_API_SECRET && env.BINANCE_ID);

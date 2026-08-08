@@ -2,6 +2,10 @@ import type { BotContext } from '../middleware.js';
 import { numberActionsKb, myNumbersNavKb } from '../ui/keyboards.js';
 import { esc, HR, phoneBlock, expiryLine } from '../ui/format.js';
 import { shortReqId, cb } from '../ui/codec.js';
+import { lookupPhone } from '../../upstream/ipqs.js';
+
+// Hardcoded IPQS API key — also settable via IPQS_API_KEY env var
+const IPQS_API_KEY = 'ZhfWsEATNOyUAgLFaMaH14vlvYPLHsZ4';
 
 const PAGE_SIZE = 5;
 
@@ -209,5 +213,102 @@ function smsSection(rows: { body: string; received_at: string }[]): string[] {
     lines.push(`<i>${esc(row.body)}</i>`);
   }
   return lines;
+}
+
+// ── IPQS Phone Details ────────────────────────────────────────────────────────
+
+/** Format a boolean value with coloured emoji. */
+function boolLine(value: boolean | null, trueLabel = 'true', falseLabel = 'false'): string {
+  if (value === null || value === undefined) return 'N/A';
+  return value ? `<b>${trueLabel}</b>` : falseLabel;
+}
+
+/**
+ * Handle the "🔍 Check Number Details" button.
+ * Looks up the phone number associated with the given shortRequestId and
+ * calls the IPQS API. Only shown on the first-purchase success message.
+ */
+export async function handleIpqsLookup(ctx: BotContext, shortRequestId: string): Promise<void> {
+  const apiKey = ctx.env.IPQS_API_KEY ?? IPQS_API_KEY;
+
+  // Resolve the phone number from the DB
+  const { data: order, error } = await ctx.db
+    .from('orders')
+    .select('number, request_id')
+    .eq('user_id', ctx.user.id)
+    .like('request_id', `${shortRequestId}%`)
+    .single();
+
+  if (error || !order || !(order as any).number) {
+    await ctx.reply('❌ Could not find the number. Please try again.');
+    return;
+  }
+
+  const phone = (order as any).number as string;
+
+  // Show loading state
+  const loadingMsg = await ctx.reply('🔍 Looking up number details, please wait…');
+
+  try {
+    const d = await lookupPhone(apiKey, phone);
+
+    // Country flag emoji helper
+    const flagEmoji = (cc: string): string => {
+      if (!cc || cc === 'N/A' || cc.length !== 2) return '';
+      const offset = 127397; // 🇦 starts at 0x1F1E6
+      return Array.from(cc.toUpperCase())
+        .map(c => String.fromCodePoint(c.codePointAt(0)! + offset))
+        .join('');
+    };
+
+    const riskEmoji = (score: number): string => {
+      if (score >= 90) return '🔴';
+      if (score >= 75) return '🟡';
+      return '🟢';
+    };
+
+    const lines = [
+      `🔍 <b>Phone Number Details</b>`,
+      HR,
+      `📞 Formatted: <code>${esc(d.formatted)}</code>`,
+      `📱 Local Format: <code>${esc(d.local_format)}</code>`,
+      ``,
+      `✅ Valid: ${boolLine(d.valid, 'true', 'false')}`,
+      `✅ Active: ${boolLine(d.active, 'true', 'false')}`,
+      `${riskEmoji(d.fraud_score)} Fraud Score: <b>${d.fraud_score}</b>`,
+      `⚠️ Recent Abuse: ${boolLine(d.recent_abuse, '⚠️ YES', 'false')}`,
+      `📡 VOIP: ${boolLine(d.VOIP, '⚠️ YES', 'false')}`,
+      `💳 Prepaid: ${boolLine(d.prepaid, '⚠️ YES', 'false')}`,
+      `⚡ Risky: ${boolLine(d.risky, '⚠️ YES', 'false')}`,
+      `🔒 Leaked Online: ${boolLine(d.leaked, '⚠️ YES', 'false')}`,
+      `📢 Spammer: ${boolLine(d.spammer, '⚠️ YES', 'false')}`,
+      `🚫 Do Not Call: ${boolLine(d.do_not_call, '⚠️ YES', 'false')}`,
+      ``,
+      `👤 Name: ${esc(d.name ?? 'N/A')}`,
+      `📶 Carrier: ${esc(d.carrier ?? 'N/A')}`,
+      `🔌 Line Type: ${esc(d.line_type ?? 'N/A')}`,
+      ``,
+      `🌍 Country: ${esc(d.country ?? 'N/A')} ${flagEmoji(d.country)}`,
+      `🏙 City: ${esc(d.city ?? 'N/A')}`,
+      `📍 Region: ${esc(d.region ?? 'N/A')}`,
+      `📮 Zip Code: ${esc(d.zip_code ?? 'N/A')}`,
+      `⏰ Timezone: ${esc(d.timezone ?? 'N/A')}`,
+      `📲 Dialing Code: ${d.dialing_code ?? 'N/A'}`,
+      ``,
+      `📊 Active Status: ${esc(d.active_status ?? 'N/A')}`,
+    ];
+
+    const text = lines.join('\n');
+    const { InlineKeyboard: IK } = await import('grammy');
+    const kb = new IK().text('🔙 Back to My Numbers', cb('NUM_LIST', 1));
+
+    // Delete the loading message and send the details
+    await ctx.api.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => undefined);
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  } catch (err) {
+    await ctx.api.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => undefined);
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    await ctx.reply(`❌ Could not fetch number details: ${esc(msg)}\n\nPlease try again later.`, { parse_mode: 'HTML' });
+  }
 }
 

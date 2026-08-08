@@ -21,6 +21,7 @@
  *   ACT_FLAG   - flag number    (param: requestId)
  *   ACT_RENEW  - renew LTR      (param: requestId)
  *   ACT_DUR    - change duration (param: requestId:duration)
+ *   ACT_IPQS   - IPQS phone number details (param: shortRequestId)
  *   ADM_MAIN   - admin main menu
  *   ADM_PRICE  - admin pricing menu
  *   ADM_USERS  - admin users list

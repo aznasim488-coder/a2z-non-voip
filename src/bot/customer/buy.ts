@@ -26,7 +26,7 @@ import { resolvePrice, type PlanCode } from '../../domain/pricing.js';
 import { BreakerOpenError, UpstreamDownError } from '../../upstream/client.js';
 import { US_STATES } from '../../domain/usa-states.js';
 import { InlineKeyboard } from 'grammy';
-import { cb } from '../ui/codec.js';
+import { cb, shortReqId } from '../ui/codec.js';
 
 const STATE_NAMES = Object.keys(US_STATES);
 
@@ -192,7 +192,12 @@ export async function handleBuyExecute(
       `💳 New balance: <b>${fc(newBalance)}</b>\n\n` +
       `📨 <b>OTP will appear here automatically</b> when received.\n` +
       `You can also check <b>My Numbers</b> at any time.`,
-      { parse_mode: 'HTML' },
+      {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard()
+          .text('🔍 Check Number Details', cb('ACT_IPQS', shortReqId(result.requestId))).row()
+          .text('📱 My Numbers', cb('NUM_LIST', 1)).text('🏠 Home', cb('HOME')),
+      },
     );
 
     // Save message_id so the OTP notification can reply to this exact message
