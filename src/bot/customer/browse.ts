@@ -14,6 +14,7 @@ import { esc, HR } from '../ui/format.js';
 import { formatCents } from '../../domain/money.js';
 import { resolvePrice, type PlanCode, type PriceRule } from '../../domain/pricing.js';
 import { cb } from '../ui/codec.js';
+import { InlineKeyboard } from 'grammy';
 
 const PAGE_SIZE = 8;
 
@@ -358,7 +359,6 @@ export async function handleServiceSearch(ctx: BotContext, query: string): Promi
     name: e.name,
   }));
 
-  const { InlineKeyboard } = await import('grammy');
   const kb = new InlineKeyboard();
   for (const s of svcs) {
     // ✅ Use cb() with colon separator (NOT raw comma string)

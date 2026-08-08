@@ -146,6 +146,7 @@ export class PvaDealsClient {
 
     const res = await fetch(`${this.baseUrl}${path}`, {
       ...init,
+      signal: AbortSignal.timeout(15000),
       headers: {
         'Content-Type': 'application/json',
         // ✅ Correct auth: Bearer token (NOT x-api-key)
