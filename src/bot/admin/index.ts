@@ -80,16 +80,34 @@ export async function handleAdminStatus(ctx: BotContext): Promise<void> {
 }
 
 /** /broadcast <message> — send announcement to all non-banned users (~25/s). */
+
+// Deduplicate by Telegram message_id — the same /broadcast message always
+// has the same ID, so retried webhook deliveries are safely ignored even
+// after the first run completes and the in-flight flag is reset.
+const _processedBroadcastIds = new Set<number>();
 let _broadcastRunning = false;
 
 export async function handleBroadcast(ctx: BotContext, text: string): Promise<void> {
   if (!isAdmin(ctx.env, ctx.user?.telegram_id)) return;
   if (!text.trim()) { await ctx.reply('❌ Provide a message: /broadcast <text>'); return; }
 
-  // Guard: prevent duplicate broadcasts from webhook retries or accidental re-sends
+  // Reject if this exact message was already processed (webhook retry)
+  const msgId = ctx.message?.message_id;
+  if (msgId !== undefined && _processedBroadcastIds.has(msgId)) {
+    return; // silently drop — already handled
+  }
+
+  // Reject if another broadcast is currently in progress
   if (_broadcastRunning) {
     await ctx.reply('⚠️ A broadcast is already in progress. Please wait for it to finish.');
     return;
+  }
+
+  // Mark this message as handled immediately (before any awaits)
+  if (msgId !== undefined) {
+    _processedBroadcastIds.add(msgId);
+    // Clean up old IDs after 10 minutes to avoid unbounded growth
+    setTimeout(() => _processedBroadcastIds.delete(msgId), 10 * 60_000);
   }
 
   _broadcastRunning = true;
