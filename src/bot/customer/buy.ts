@@ -143,7 +143,7 @@ export async function handleBuyExecute(
     return;
   }
 
-  // Create order record
+  // Create order record (idempotent — returns existing row on duplicate key)
   const order = await createOrder(ctx.db, {
     userId: ctx.user.id,
     serviceId: serviceId ?? '',
@@ -153,6 +153,12 @@ export async function handleBuyExecute(
     costCents: costCents ?? 0,
     idempotencyKey,
   });
+
+  // If the order was already processed (Telegram retry of a stale callback_query_id),
+  // don't re-purchase. The wallet debit above was also idempotent, so no double charge.
+  if (order.status !== 'PENDING_UPSTREAM') {
+    return;
+  }
 
   await ctx.reply('⏳ Purchasing your number, please wait...', { parse_mode: 'HTML' });
 

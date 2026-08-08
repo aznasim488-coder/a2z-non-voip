@@ -69,7 +69,21 @@ export async function createOrder(
     .select()
     .single();
 
-  if (error) throw new Error(`createOrder failed: ${error.message}`);
+  if (error) {
+    // Postgres unique violation (23505) = this order was already created by a
+    // prior attempt with the same callback_query_id. Fetch + return the existing
+    // row so the caller can check its status and avoid double-purchasing.
+    if (error.code === '23505') {
+      const { data: existing } = await db
+        .from('orders')
+        .select('*')
+        .eq('idempotency_key', opts.idempotencyKey)
+        .single();
+      if (existing) return existing as OrderRow;
+    }
+    throw new Error(`createOrder failed: ${error.message}`);
+  }
+
   return data as OrderRow;
 }
 
