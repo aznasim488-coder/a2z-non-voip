@@ -80,30 +80,44 @@ export async function handleAdminStatus(ctx: BotContext): Promise<void> {
 }
 
 /** /broadcast <message> — send announcement to all non-banned users (~25/s). */
+let _broadcastRunning = false;
+
 export async function handleBroadcast(ctx: BotContext, text: string): Promise<void> {
   if (!isAdmin(ctx.env, ctx.user?.telegram_id)) return;
   if (!text.trim()) { await ctx.reply('❌ Provide a message: /broadcast <text>'); return; }
 
-  const { data: profiles } = await ctx.db
-    .from('profiles')
-    .select('telegram_id')
-    .eq('is_banned', false);
-
-  const users = (profiles ?? []) as { telegram_id: number }[];
-  await ctx.reply(`📢 Sending to ${users.length} users...`);
-
-  let sent = 0, failed = 0;
-  for (let i = 0; i < users.length; i++) {
-    if (i > 0 && i % 25 === 0) await new Promise((r) => setTimeout(r, 1000));
-    try {
-      await ctx.api.sendMessage(
-        users[i]!.telegram_id,
-        `📢 <b>Announcement</b>\n\n${esc(text)}`,
-        { parse_mode: 'HTML' },
-      );
-      sent++;
-    } catch { failed++; }
+  // Guard: prevent duplicate broadcasts from webhook retries or accidental re-sends
+  if (_broadcastRunning) {
+    await ctx.reply('⚠️ A broadcast is already in progress. Please wait for it to finish.');
+    return;
   }
 
-  await ctx.reply(`✅ Broadcast done: ${sent} sent, ${failed} failed.`);
+  _broadcastRunning = true;
+
+  try {
+    const { data: profiles } = await ctx.db
+      .from('profiles')
+      .select('telegram_id')
+      .eq('is_banned', false);
+
+    const users = (profiles ?? []) as { telegram_id: number }[];
+    await ctx.reply(`📢 Sending to ${users.length} users...`);
+
+    let sent = 0, failed = 0;
+    for (let i = 0; i < users.length; i++) {
+      if (i > 0 && i % 25 === 0) await new Promise((r) => setTimeout(r, 1000));
+      try {
+        await ctx.api.sendMessage(
+          users[i]!.telegram_id,
+          `📢 <b>Announcement</b>\n\n${esc(text)}`,
+          { parse_mode: 'HTML' },
+        );
+        sent++;
+      } catch { failed++; }
+    }
+
+    await ctx.reply(`✅ Broadcast done: ${sent} sent, ${failed} failed.`);
+  } finally {
+    _broadcastRunning = false;
+  }
 }
