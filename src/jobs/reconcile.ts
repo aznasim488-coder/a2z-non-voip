@@ -444,16 +444,26 @@ export class ReconcileSweep {
             `(request ${order.request_id}) — upstream COMPLETED, our DB was RESERVED`,
           );
 
-          // Store a placeholder SMS so other sweeps don't process this order
+          // Extract message and pin from upstream response if available
+          const latestCode = upstream.codes && upstream.codes.length > 0
+            ? upstream.codes[upstream.codes.length - 1]
+            : null;
+          const smsBody = latestCode?.message || upstream.message || '[OTP received — webhook missed, code retrieved by poll]';
+          const pin = latestCode?.pin || null;
+
+          // Store SMS message
           await this.db.from('sms_messages').insert({
             order_id:   order.id,
             user_id:    order.user_id,
             request_id: order.request_id,
             number:     order.number ?? null,
-            body:       '[OTP received — webhook missed, code retrieved by poll]',
+            body:       smsBody,
           } as any);
 
           // Notify the user
+          const { extractOtp } = await import('../domain/pricing.js');
+          const otp = pin || extractOtp(smsBody);
+
           const isStr = !order.plan || order.plan === 'STR';
           let reuseNote = '';
           if (isStr) {
@@ -464,10 +474,11 @@ export class ReconcileSweep {
               `(costs $${(reuseCents / 100).toFixed(2)} per request).</i>`;
           }
 
-          const msgText =
-            `📨 <b>OTP Received!</b>\n` +
-            `Your number <code>${order.number ?? 'N/A'}</code> (${order.service_name}) received an SMS.\n\n` +
-            `🔑 Check <b>My Numbers → ${order.number ?? 'your number'}</b> or tap <b>Get OTP</b> to see the code.${reuseNote}`;
+          const msgText = otp
+            ? `📨 <b>OTP Received!</b>\n🔑 Code: <code>${otp}</code>\n\n<i>${smsBody}</i>${reuseNote}`
+            : `📨 <b>OTP Received!</b>\n` +
+              `Your number <code>${order.number ?? 'N/A'}</code> (${order.service_name}) received an SMS.\n\n` +
+              `🔑 Check <b>My Numbers → ${order.number ?? 'your number'}</b> or tap <b>Get OTP</b> to see the code.${reuseNote}`;
 
           await this.dmUser(order.user_id, msgText, order.purchase_msg_id ?? undefined);
 

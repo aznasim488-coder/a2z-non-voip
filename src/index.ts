@@ -12,7 +12,7 @@ import { BalanceWatch } from './jobs/balance-watch.js';
 import { ReconcileSweep } from './jobs/reconcile.js';
 import { processNowPaymentsIpn, verifyIpnSignature } from './payments/nowpayments.js';
 import { parseBkashSms, tkToCents } from './payments/bkash.js';
-import { creditWallet } from './domain/wallet.js';
+import { creditWallet, getBalanceCents } from './domain/wallet.js';
 import { formatCents } from './domain/money.js';
 import cors from '@fastify/cors';
 import { registerApiRoutes } from './api/routes.js';
@@ -165,18 +165,19 @@ app.post('/webhooks/bkash-sms', async (req, reply) => {
       .eq('id', t.id);
 
     // Get user telegram_id to notify
-    const { data: userRow } = await db
-      .from('users')
-      .select('telegram_id, balance_cents')
+    const { data: profile } = await db
+      .from('profiles')
+      .select('telegram_id')
       .eq('id', t.user_id as string)
       .maybeSingle();
 
-    if (userRow) {
-      const ur = userRow as any;
-      const newBal = formatCents(ur.balance_cents as number);
+    if (profile) {
+      const tid = (profile as any).telegram_id as number;
+      const balCents = await getBalanceCents(db, tid);
+      const newBal = formatCents(balCents);
       const amountUsd = (amountCents / 100).toFixed(2);
       await bot.api.sendMessage(
-        ur.telegram_id as number,
+        tid,
         `✅ <b>bKash Payment Verified! (Auto)</b>\n` +
         `━━━━━━━━━━━━━━━\n` +
         `📋 TrxID: <code>${trxId}</code>\n` +

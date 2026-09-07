@@ -59,6 +59,18 @@ export interface UpstreamServiceById {
   LTRstock: number;
 }
 
+export interface UpstreamCode {
+  _id?: string;
+  requestId?: string;
+  parentId?: string;
+  message?: string;
+  pin?: string;
+  fromNumber?: string;
+  toNumber?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface UpstreamRequest {
   _id: string;
   serviceName: string;
@@ -75,6 +87,8 @@ export interface UpstreamRequest {
   autoRenewEnable?: boolean;
   duration?: number;      // only on LTR requests
   createdAt?: string;
+  codes?: UpstreamCode[];
+  message?: string;
 }
 
 export interface UpstreamBalance {

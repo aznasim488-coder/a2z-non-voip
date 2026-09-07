@@ -593,7 +593,7 @@ export async function handleBkashApprove(
 
   // Get user record
   const { data: userRow } = await ctx.db
-    .from('users')
+    .from('profiles')
     .select('id')
     .eq('telegram_id', userTelegramId)
     .maybeSingle();
@@ -627,13 +627,8 @@ export async function handleBkashApprove(
     );
 
     // Notify the user
-    const { data: newBalRow } = await ctx.db
-      .from('users')
-      .select('balance_cents')
-      .eq('telegram_id', userTelegramId)
-      .maybeSingle();
-
-    const newBal = formatCents(newBalRow?.balance_cents ?? amountCents);
+    const balCents = await getBalanceCents(ctx.db, userTelegramId);
+    const newBal = formatCents(balCents || amountCents);
     const userKb = new InlineKeyboard()
       .text('💳 Wallet', cb('TOPUP'))
       .text('📲 Buy Number', cb('SVC_LIST', 1)).row()
@@ -753,15 +748,15 @@ export async function handleNagadApprove(ctx: BotContext, userTelegramId: number
   const idempKey = `nagad_${trxId}`;
   const { data: dup } = await ctx.db.from('ledger_entries').select('id').eq('idempotency_key', idempKey).maybeSingle();
   if (dup) { await ctx.editMessageText(`⚠️ Already credited. TrxID: <code>${trxId}</code>`, { parse_mode: 'HTML' }); return; }
-  const { data: userRow } = await ctx.db.from('users').select('id').eq('telegram_id', userTelegramId).maybeSingle();
+  const { data: userRow } = await ctx.db.from('profiles').select('id').eq('telegram_id', userTelegramId).maybeSingle();
   if (!userRow) { await ctx.editMessageText(`❌ User not found: ${userTelegramId}`); return; }
   try {
     await creditWallet(ctx.db, { userId: (userRow as any).id, amountCents, kind: 'topup', idempotencyKey: idempKey, note: `Nagad approved — TrxID: ${trxId}` });
     await (ctx.db.from('topups') as any).update({ status: 'confirmed' }).eq('external_id', trxId);
     const amountUsd = (amountCents / 100).toFixed(2);
     await ctx.editMessageText(`✅ <b>Nagad Approved & Credited</b>\nTrxID: <code>${trxId}</code> → $${amountUsd} → user ${userTelegramId}`, { parse_mode: 'HTML' });
-    const { data: bal } = await ctx.db.from('users').select('balance_cents').eq('telegram_id', userTelegramId).maybeSingle();
-    const newBal = formatCents((bal as any)?.balance_cents ?? amountCents);
+    const balCents = await getBalanceCents(ctx.db, userTelegramId);
+    const newBal = formatCents(balCents || amountCents);
     const userKb = new InlineKeyboard().text('💳 Wallet', cb('TOPUP')).text('📲 Buy', cb('SVC_LIST', 1)).row().text('🏠 Home', cb('HOME'));
     await ctx.api.sendMessage(userTelegramId,
       `✅ <b>Nagad Payment Approved!</b>\n${HR}\nTrxID: <code>${trxId}</code>\n💵 Credited: <b>$${amountUsd}</b>\n💳 Balance: <b>${newBal}</b>\n\nআপনার wallet এ টাকা যোগ হয়েছে! 🎉`,
