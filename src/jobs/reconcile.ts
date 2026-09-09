@@ -414,17 +414,18 @@ export class ReconcileSweep {
 
           if (upstream.status !== 'COMPLETED') continue;
 
-          // Check if we already have SMS for this order (webhook might have
-          // arrived between our DB query and this point)
-          const { data: existingSms } = await this.db
+          // Check how many SMS we already stored for this order
+          const { count: smsCount } = await this.db
             .from('sms_messages')
-            .select('id')
-            .eq('order_id', order.id)
-            .limit(1)
-            .maybeSingle();
+            .select('id', { count: 'exact', head: true })
+            .eq('order_id', order.id);
 
-          if (existingSms) {
-            // SMS already stored — just update order status if still RESERVED
+          const upstreamCodeCount = upstream.codes && upstream.codes.length > 0
+            ? upstream.codes.length
+            : 1;
+
+          if ((smsCount ?? 0) >= upstreamCodeCount) {
+            // All SMS already stored — just update order status if still RESERVED
             await this.db
               .from('orders')
               .update({ status: 'COMPLETED' } as any)

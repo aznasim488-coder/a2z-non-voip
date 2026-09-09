@@ -85,40 +85,60 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
   const requestId    = order.request_id as string;
   const isReserved   = (order.status as string) === 'RESERVED';
   const isCompleted  = (order.status as string) === 'COMPLETED';
+  const isDbExpired  = (order.status as string) === 'EXPIRED';
   const isLtr        = (order.plan as string) !== 'STR';
   const planStr      = (order.plan as string);
 
-  // Check if the number is expired (end_time in the past)
-  const endTime  = order.end_time ? new Date(order.end_time as string) : null;
-  const isExpired = endTime ? endTime < new Date() : false;
+  // Check timestamp expiration
+  const endTime       = order.end_time ? new Date(order.end_time as string) : null;
+  const isPastEndTime = endTime ? endTime < new Date() : false;
+
+  // LTR expires when the rental end_time passes or status is EXPIRED
+  const isLtrExpired  = isLtr && (isDbExpired || isPastEndTime);
+
+  // STR:
+  // - If DB status is EXPIRED: expired without OTP & refunded
+  // - If RESERVED and past end_time: initial window expired without OTP
+  // - If COMPLETED: NOT expired! Completed STR numbers can be reused anytime for $0.80.
+  const isStrExpired  = !isLtr && (isDbExpired || (isReserved && isPastEndTime));
 
   // Duration from plan code
   const durationMap: Record<string, number> = { LTR3: 3, LTR7: 7, LTR14: 14, LTR30: 30 };
   let currentDuration = durationMap[planStr] ?? 3;
   let autoRenew       = (order as any).auto_renew as boolean ?? false;
+  const reuseCount    = (order as any).reuse_count as number ?? 0;
 
-  // ── Flag rules (same for STR and LTR) ───────────────────────────────────────
-  //   RESERVED  = no OTP yet → flag IS allowed
-  //   COMPLETED = OTP arrived → flag NOT allowed
-  //   EXPIRED   = past end_time → flag NOT allowed
-  //   REUSED    = if reuse_count > 0, it means it already got a code previously → flag NOT allowed
-  const reuseCount = (order as any).reuse_count as number ?? 0;
-  
-  let allowFlag    = isReserved && !isExpired && reuseCount === 0;
-  let allowReuse   = isCompleted && !isExpired;
-  // LTR-only actions (only while still active)
-  let canRenew     = isLtr && !isExpired;
-  let canChangeDur = isLtr && !isExpired;
+  // Defaults before upstream query
+  let allowFlag    = isReserved && !isPastEndTime && reuseCount === 0;
+  let allowReuse   = isLtr ? (isCompleted && !isLtrExpired) : isCompleted;
+  let canRenew     = isLtr && !isLtrExpired;
+  let canChangeDur = isLtr && !isLtrExpired;
 
-  if (!isExpired) {
+  // Query upstream PVA deals for live status and action flags
+  // We query upstream whenever the order is not dead (i.e. not LTR expired or STR reservation expired)
+  let upstreamReuseDisallowed = false;
+  if (!isLtrExpired && !isStrExpired) {
     try {
       const req = await ctx.pva.getRequest(requestId);
-      // For COMPLETED numbers, respect upstream allowFlag (usually false)
-      if (!isReserved) allowFlag = req.allowFlag && !isExpired && reuseCount === 0;
-      allowReuse   = req.allowReuse && !isExpired;
-      canRenew     = req.numberType === 'LTR' && !isExpired;
-      canChangeDur = req.numberType === 'LTR' && !isExpired;
-      autoRenew    = req.autoRenewEnable ?? autoRenew;
+      if (isReserved) {
+        allowFlag = req.allowFlag && !isPastEndTime && reuseCount === 0;
+      } else {
+        allowFlag = false;
+      }
+
+      if (isLtr) {
+        allowReuse   = req.allowReuse && !isLtrExpired;
+        canRenew     = req.numberType === 'LTR' && !isLtrExpired;
+        canChangeDur = req.numberType === 'LTR' && !isLtrExpired;
+      } else {
+        // For STR: upstream allowReuse determines if reuse is allowed
+        allowReuse = req.allowReuse;
+        if (req.allowReuse === false) {
+          upstreamReuseDisallowed = true;
+        }
+      }
+
+      autoRenew = req.autoRenewEnable ?? autoRenew;
       if (req.duration) currentDuration = req.duration;
     } catch {
       // Upstream unreachable — keep defaults
@@ -128,8 +148,14 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
   const typeLabel = isLtr ? `LTR-${currentDuration}d` : 'STR 20-min';
   const arStatus  = autoRenew ? '🟢 ON' : '🔴 OFF';
 
+  // Determine if the number is truly dead and should show the simplified expired view:
+  // - LTR past rental period
+  // - STR never received OTP and reservation timed out
+  // - STR completed, but upstream explicitly declared allowReuse: false
+  const showExpiredView = isLtrExpired || isStrExpired || (!isLtr && isCompleted && upstreamReuseDisallowed);
+
   // ── Expired number — simplified view ────────────────────────────────────────
-  if (isExpired) {
+  if (showExpiredView) {
     const smsRows = await fetchSmsForOrder(ctx, order.id as string);
     const lines = [
       `📱 <b>Number Details</b>`,
@@ -152,8 +178,24 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
     return;
   }
 
-  // ── Active number ────────────────────────────────────────────────────────────
+  // ── Active / Reusable number ──────────────────────────────────────────────────
   const smsRows = await fetchSmsForOrder(ctx, order.id as string);
+
+  // Expiry / window info line
+  let windowLine = '';
+  if (order.end_time) {
+    if (!isLtr && isCompleted) {
+      if (isPastEndTime) {
+        windowLine = allowReuse
+          ? `⏱ OTP Window: <b>Finished</b> (🔄 <i>Reuse available anytime</i>)`
+          : `⏱ OTP Window: <b>Finished</b>`;
+      } else {
+        windowLine = expiryLine(order.end_time as string);
+      }
+    } else {
+      windowLine = expiryLine(order.end_time as string);
+    }
+  }
 
   const lines = [
     `📱 <b>Number Details</b>`,
@@ -162,9 +204,9 @@ export async function handleNumberView(ctx: BotContext, shortRequestId: string):
     `Service: <b>${esc(order.service_name as string)}</b>`,
     `Plan: <b>${typeLabel}</b>`,
     `Status: <b>${order.status}</b>`,
-    expiryLine(order.end_time as string),
-    ...smsSection(smsRows),
   ];
+  if (windowLine) lines.push(windowLine);
+  lines.push(...smsSection(smsRows));
   if (isLtr) lines.push(`Auto Renew: <b>${arStatus}</b>`);
 
   const text = lines.join('\n');

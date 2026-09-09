@@ -70,7 +70,11 @@ export async function handleReusePrompt(ctx: BotContext, requestId: string): Pro
     (balance < reuseCents ? `\n\n❌ <b>Insufficient balance.</b> Please top up first.` : '');
 
   if (balance < reuseCents) {
-    await ctx.reply(text, { parse_mode: 'HTML' });
+    const kb = new InlineKeyboard()
+      .text('💳 Top Up Wallet', cb('TOPUP')).row()
+      .text('🔙 Back', cb('NUM_VIEW', requestId.slice(0, 20)))
+      .text('🏠 Home', cb('HOME'));
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
     return;
   }
 
@@ -85,26 +89,35 @@ export async function handleReusePrompt(ctx: BotContext, requestId: string): Pro
 export async function handleReuseExecute(ctx: BotContext, requestId: string): Promise<void> {
   const idempotencyKey = (ctx.callbackQuery?.id ?? '') + '_reuse';
 
-  // Check plan type
+  // Check plan type and order id
   const { data: order } = await ctx.db
     .from('orders')
-    .select('plan')
+    .select('id,plan')
     .eq('request_id', requestId)
     .eq('user_id', ctx.user.id)
     .single();
 
+  const orderId = (order as any)?.id as string | undefined;
   const plan   = (order as any)?.plan as string ?? 'STR';
   const isLtr  = plan !== 'STR';
 
   // ── LTR: free — just call upstream ──────────────────────────────────────────
   if (isLtr) {
     try {
-      await ctx.pva.reuseRequest(requestId);
+      const upstreamRes = await ctx.pva.reuseRequest(requestId);
+      if (upstreamRes?.endTime && orderId) {
+        await ctx.db.from('orders')
+          .update({ end_time: upstreamRes.endTime, updated_at: new Date().toISOString() } as any)
+          .eq('id', orderId);
+      }
+      const kb = new InlineKeyboard()
+        .text('📱 My Numbers', cb('NUM_LIST', 1))
+        .text('🏠 Home', cb('HOME'));
       await ctx.editMessageText(
         `🔄 <b>OTP Requested!</b>\n${HR}\n` +
         `A new OTP will be sent to your number shortly.\n` +
         `<i>Included in your LTR rental — no charge.</i>`,
-        { parse_mode: 'HTML' },
+        { parse_mode: 'HTML', reply_markup: kb },
       ).catch(() => ctx.reply('✅ OTP requested. No charge (LTR rental).'));
     } catch {
       await ctx.reply('❌ Could not request OTP. Try again.');
@@ -125,11 +138,15 @@ export async function handleReuseExecute(ctx: BotContext, requestId: string): Pr
       amountCents: reuseCents,
       kind: 'reuse',
       idempotencyKey,
+      orderId, // Link to order so reconcile auto-refund sweep can trace it
       note: `Reuse OTP ${requestId.slice(0, 12)}`,
     });
   } catch (e) {
     if (e instanceof InsufficientFundsError) {
-      await ctx.editMessageText(`❌ Insufficient balance. Need ${formatCents(reuseCents)}.`).catch(() => ctx.reply('❌ Insufficient balance.'));
+      const kb = new InlineKeyboard()
+        .text('💳 Top Up Wallet', cb('TOPUP')).row()
+        .text('🏠 Home', cb('HOME'));
+      await ctx.editMessageText(`❌ Insufficient balance. Need ${formatCents(reuseCents)}.`, { reply_markup: kb }).catch(() => ctx.reply('❌ Insufficient balance.'));
       return;
     }
     await ctx.reply('❌ Could not process payment. Try again.');
@@ -137,9 +154,9 @@ export async function handleReuseExecute(ctx: BotContext, requestId: string): Pr
   }
 
   try {
-    await ctx.pva.reuseRequest(requestId);
+    const upstreamRes = await ctx.pva.reuseRequest(requestId);
     
-    // ── STR Reuse logic: Mark RESERVED and increment reuse_count ────────────────
+    // ── STR Reuse logic: Mark RESERVED, set new end_time and increment reuse_count ────
     const { data: currentOrder } = await ctx.db
       .from('orders')
       .select('id, reuse_count')
@@ -149,20 +166,28 @@ export async function handleReuseExecute(ctx: BotContext, requestId: string): Pr
 
     if (currentOrder) {
       const currentCount = (currentOrder as any).reuse_count ?? 0;
+      const newEndTime = upstreamRes?.endTime ?? new Date(Date.now() + 10 * 60_000).toISOString();
       await ctx.db.from('orders')
         .update({ 
           status: 'RESERVED', 
+          end_time: newEndTime,
           updated_at: new Date().toISOString(),
           reuse_count: currentCount + 1 
         } as any)
         .eq('id', (currentOrder as any).id);
     }
 
+    const kb = new InlineKeyboard()
+      .text('📱 My Numbers', cb('NUM_LIST', 1))
+      .text('🏠 Home', cb('HOME'));
+
     await ctx.editMessageText(
       `🔄 <b>OTP Request Sent!</b>\n${HR}\n` +
       `A new OTP will be sent to your number shortly.\n` +
-      `Charged: <b>${formatCents(reuseCents)}</b>`,
-      { parse_mode: 'HTML' },
+      `Charged: <b>${formatCents(reuseCents)}</b>\n\n` +
+      `⏱ Window: 10 minutes\n` +
+      `<i>If no OTP arrives, your payment will be refunded automatically.</i>`,
+      { parse_mode: 'HTML', reply_markup: kb },
     ).catch(() => ctx.reply(`✅ OTP requested. Cost: ${formatCents(reuseCents)}.`));
   } catch {
     await creditWallet(ctx.db, {
